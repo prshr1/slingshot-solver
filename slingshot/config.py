@@ -6,16 +6,14 @@ Supports YAML/JSON config files with Pydantic validation.
 from typing import Optional, Literal, Dict, Any
 from dataclasses import dataclass
 import json
-import yaml
 from pathlib import Path
 
 try:
-    from pydantic import BaseModel, Field, validator
+    import yaml
 except ImportError:
-    # Fallback for users without pydantic
-    BaseModel = object
-    Field = lambda **kwargs: None
+    yaml = None
 
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 # Physical Constants (SI units or as specified)
 @dataclass
@@ -29,8 +27,18 @@ class PhysicalConstants:
     R_SUN: float = 696000.0  # km
 
 
-class SystemConfig(BaseModel if BaseModel != object else object):
+class SystemConfig(BaseModel):
     """Physical system configuration (star + planet)."""
+    
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "name": "Kepler-432",
+            "M_star_Msun": 1.19,
+            "M_planet_Mjup": 5.2,
+            "R_planet_Rjup": 1.155,
+            "a_planet_AU": 0.0896,
+        }
+    })
     
     name: str = Field(default="Kepler-432", description="System identifier")
     M_star_Msun: float = Field(default=1.19, ge=0.01, le=10.0, description="Star mass in solar masses")
@@ -38,27 +46,28 @@ class SystemConfig(BaseModel if BaseModel != object else object):
     R_planet_Rjup: float = Field(default=1.155, ge=0.1, le=10.0, description="Planet radius in Jupiter radii")
     a_planet_AU: float = Field(default=0.0896, ge=0.001, le=1.0, description="Orbital semi-major axis in AU")
     
-    if BaseModel != object:
-        @validator('a_planet_AU')
-        def validate_orbit(cls, v, values):
-            if v <= 0:
-                raise ValueError("Orbital semi-major axis must be positive")
-            return v
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "name": "Kepler-432",
-                "M_star_Msun": 1.19,
-                "M_planet_Mjup": 5.2,
-                "R_planet_Rjup": 1.155,
-                "a_planet_AU": 0.0896,
-            }
-        }
+    @field_validator('a_planet_AU')
+    @classmethod
+    def validate_orbit(cls, v):
+        if v <= 0:
+            raise ValueError("Orbital semi-major axis must be positive")
+        return v
 
 
-class SamplingConfig(BaseModel if BaseModel != object else object):
+class SamplingConfig(BaseModel):
     """Satellite sampling configuration."""
+    
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "mode": "barycentric",
+            "v_mag_min_kms": 10.0,
+            "v_mag_max_kms": 120.0,
+            "impact_param_min_AU": 0.5,
+            "impact_param_max_AU": 3.0,
+            "angle_in_min_deg": -60.0,
+            "angle_in_max_deg": 60.0,
+        }
+    })
     
     mode: Literal["barycentric", "planet"] = Field(
         default="barycentric",
@@ -84,23 +93,19 @@ class SamplingConfig(BaseModel if BaseModel != object else object):
         default="both",
         description="Require barycentric escape at: 'pre' (initial), 'post' (final), 'either', 'both', or None"
     )
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "mode": "barycentric",
-                "v_mag_min_kms": 10.0,
-                "v_mag_max_kms": 120.0,
-                "impact_param_min_AU": 0.5,
-                "impact_param_max_AU": 3.0,
-                "angle_in_min_deg": -60.0,
-                "angle_in_max_deg": 60.0,
-            }
-        }
 
 
-class NumericalConfig(BaseModel if BaseModel != object else object):
+class NumericalConfig(BaseModel):
     """Numerical integration and analysis parameters."""
+    
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "rtol": 1e-10,
+            "atol": 1e-10,
+            "r_far_factor": 20.0,
+            "min_clearance_factor": 1.05,
+        }
+    })
     
     rtol: float = Field(default=1e-10, ge=1e-12, le=1e-6, description="Relative tolerance for ODE solver")
     atol: float = Field(default=1e-10, ge=1e-12, le=1e-6, description="Absolute tolerance for ODE solver")
@@ -108,20 +113,24 @@ class NumericalConfig(BaseModel if BaseModel != object else object):
     # Analysis parameters
     r_far_factor: float = Field(default=20.0, ge=1.0, description="Distance factor for 'far' asymptotic regime")
     min_clearance_factor: float = Field(default=1.05, ge=1.0, le=2.0, description="Min clearance from planet surface")
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "rtol": 1e-10,
-                "atol": 1e-10,
-                "r_far_factor": 20.0,
-                "min_clearance_factor": 1.05,
-            }
-        }
 
 
-class PipelineConfig(BaseModel if BaseModel != object else object):
+class PipelineConfig(BaseModel):
     """Monte Carlo pipeline configuration."""
+    
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "N_particles": 3000,
+            "t_mc_max_sec": 1e7,
+            "t_best_max_sec": 1e7,
+            "n_eval_best": 1000,
+            "top_frac": 0.10,
+            "min_top": 1,
+            "select_metric": "bary_delta_v_pct",
+            "select_sign": "maximize",
+            "n_parallel": None,
+        }
+    })
     
     N_particles: int = Field(default=3000, ge=1, le=100000, description="Number of test particles")
     t_mc_max_sec: float = Field(default=1e7, ge=1e4, description="Max integration time for MC sweep (seconds)")
@@ -142,25 +151,23 @@ class PipelineConfig(BaseModel if BaseModel != object else object):
     
     # Parallelization
     n_parallel: Optional[int] = Field(default=None, ge=1, description="Number of parallel workers (None = auto-detect)")
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "N_particles": 3000,
-                "t_mc_max_sec": 1e7,
-                "t_best_max_sec": 1e7,
-                "n_eval_best": 1000,
-                "top_frac": 0.10,
-                "min_top": 1,
-                "select_metric": "bary_delta_v_pct",
-                "select_sign": "maximize",
-                "n_parallel": None,
-            }
-        }
 
 
-class VisualizationConfig(BaseModel if BaseModel != object else object):
+class VisualizationConfig(BaseModel):
     """Visualization and animation configuration."""
+    
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "render_video": True,
+            "video_fps": 30,
+            "video_format": "mp4",
+            "animate_trajectory": True,
+            "animate_phase_space": True,
+            "animate_comparison": False,
+            "figure_dpi": 100,
+            "figure_format": "png",
+        }
+    })
     
     render_video: bool = Field(default=True, description="Generate animation frames and videos")
     video_fps: int = Field(default=30, ge=1, le=120, description="Video frames per second")
@@ -173,35 +180,20 @@ class VisualizationConfig(BaseModel if BaseModel != object else object):
     
     figure_dpi: int = Field(default=100, ge=50, le=300, description="Figure resolution (DPI)")
     figure_format: Literal["png", "pdf", "jpg"] = Field(default="png", description="Diagnostic plot format")
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "render_video": True,
-                "video_fps": 30,
-                "video_format": "mp4",
-                "animate_trajectory": True,
-                "animate_phase_space": True,
-                "animate_comparison": False,
-                "figure_dpi": 100,
-                "figure_format": "png",
-            }
-        }
 
 
-class FullConfig(BaseModel if BaseModel != object else object):
+class FullConfig(BaseModel):
     """Complete configuration for slingshot solver pipeline."""
+    
+    model_config = ConfigDict(json_schema_extra={
+        "description": "Complete configuration for slingshot-solver"
+    })
     
     system: SystemConfig = Field(default_factory=SystemConfig)
     sampling: SamplingConfig = Field(default_factory=SamplingConfig)
     numerical: NumericalConfig = Field(default_factory=NumericalConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
     visualization: VisualizationConfig = Field(default_factory=VisualizationConfig)
-    
-    class Config:
-        schema_extra = {
-            "description": "Complete configuration for slingshot-solver"
-        }
 
 
 def load_config(config_path: str) -> FullConfig:
@@ -225,6 +217,8 @@ def load_config(config_path: str) -> FullConfig:
     
     with open(path, 'r') as f:
         if path.suffix.lower() in ['.yaml', '.yml']:
+            if yaml is None:
+                raise ImportError("pyyaml is required for YAML config files. Install with: pip install pyyaml")
             data = yaml.safe_load(f)
         elif path.suffix.lower() == '.json':
             data = json.load(f)
@@ -295,6 +289,8 @@ def save_config(config: FullConfig, output_path: str, format: Literal["yaml", "j
     
     with open(path, 'w') as f:
         if format.lower() in ['yaml', 'yml']:
+            if yaml is None:
+                raise ImportError("pyyaml is required for YAML config files. Install with: pip install pyyaml")
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
         elif format.lower() == 'json':
             json.dump(data, f, indent=2)
