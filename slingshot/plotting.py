@@ -583,6 +583,12 @@ def plot_energy_cdf(
     mc: Dict[str, Any],
     save_dir: Optional[Path] = None,
     dpi: int = 150,
+    *,
+    analyses_best: Optional[List[Dict[str, Any]]] = None,
+    E_star_narrowed: Optional[float] = None,
+    E_planet_narrowed: Optional[float] = None,
+    E_3body_best: Optional[float] = None,
+    system_name: str = "",
 ) -> plt.Figure:
     """CDF of ½|ΔV_vec|² for successful particles.
 
@@ -590,29 +596,62 @@ def plot_energy_cdf(
     ----------
     mc : dict
         Monte Carlo results.
+    analyses_best : list of dict, optional
+        High-res re-run analyses (adds re-run CDF overlay).
+    E_star_narrowed : float, optional
+        Narrowed star 2-body max ½|ΔV_vec|² (vertical line).
+    E_planet_narrowed : float, optional
+        Narrowed planet 2-body max ½|ΔV_vec|² (vertical line).
+    E_3body_best : float, optional
+        Best 3-body ½|ΔV_vec|² from re-runs (vertical line).
+    system_name : str
+        System name for title.
     """
     ok = mc["ok"]
-    dv_vec = mc.get("delta_v_vec", np.full_like(mc["delta_v"], np.nan))[ok]
-    dv_vec = dv_vec[np.isfinite(dv_vec)]
-    energy = 0.5 * dv_vec ** 2
+    # Coarse MC energies — use scalar ΔV as proxy
+    energies_mc = 0.5 * mc["delta_v"][ok] ** 2
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    if energy.size > 0:
-        sorted_e = np.sort(energy)
+
+    # Coarse MC CDF
+    if energies_mc.size > 0:
+        sorted_e = np.sort(energies_mc)
         cdf = np.arange(1, len(sorted_e) + 1) / len(sorted_e)
-        ax.plot(sorted_e, cdf, lw=2, color="royalblue")
-        ax.fill_between(sorted_e, 0, cdf, alpha=0.15, color="royalblue")
+        ax.plot(sorted_e, cdf, lw=2, color="tab:blue", alpha=0.6,
+                label="3-body MC (coarse sweep)")
 
-        # Percentile markers
-        for pct in [50, 90, 95, 99]:
-            val = np.percentile(sorted_e, pct)
-            ax.axhline(pct / 100, color="gray", ls=":", alpha=0.5)
-            ax.axvline(val, color="gray", ls=":", alpha=0.5)
-            ax.text(val, pct / 100 + 0.02, f"P{pct}: {val:.1f}", fontsize=8)
+    # High-res re-run CDF (vector ΔV)
+    if analyses_best is not None:
+        energies_rerun = np.array([
+            a["energy_half_dv_vec_sq"]
+            for a in analyses_best if a is not None
+        ])
+        if len(energies_rerun) > 1:
+            sorted_er = np.sort(energies_rerun)
+            cdf_r = np.arange(1, len(sorted_er) + 1) / len(sorted_er)
+            ax.plot(sorted_er, cdf_r, lw=2, color="tab:purple",
+                    label=f"3-body re-run ({len(energies_rerun)} cands, ½|ΔV_vec|²)")
 
-    ax.set_xlabel("½|ΔV_vec|² (km²/s²)", fontsize=11)
-    ax.set_ylabel("CDF", fontsize=11)
-    ax.set_title("Energy CDF — ½|ΔV_vec|² distribution", fontsize=12, fontweight="bold")
+    # Narrowed 2-body baselines
+    if E_star_narrowed is not None:
+        ax.axvline(E_star_narrowed, color="tab:orange", ls="--", lw=2,
+                   label=f"Star max ½|ΔV|² = {E_star_narrowed:.2f}")
+    if E_planet_narrowed is not None:
+        ax.axvline(E_planet_narrowed, color="tab:green", ls="--", lw=2,
+                   label=f"Planet max ½|ΔV|² = {E_planet_narrowed:.2f}")
+
+    # 3-body best
+    if E_3body_best is not None:
+        ax.axvline(E_3body_best, color="tab:red", ls="-.", lw=2,
+                   label=f"3-body best ½|ΔV_vec|² = {E_3body_best:.2f}")
+
+    title = "Scattering Energy CDF — ½|ΔV_vec|² distribution"
+    if system_name:
+        title = f"Scattering Energy CDF — {system_name}: 2-Body vs 3-Body"
+    ax.set_xlabel("Scattering Energy ½|ΔV_vec|²  (km²/s²  ≡  MJ/kg)", fontsize=12)
+    ax.set_ylabel("Cumulative Fraction", fontsize=12)
+    ax.set_title(title, fontsize=14, fontweight="bold")
+    ax.legend(fontsize=9, loc="lower right")
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
 

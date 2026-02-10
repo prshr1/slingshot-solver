@@ -353,6 +353,7 @@ def phase_plots(
     best: Dict[str, Any],
     output_dir: Path,
     verbose: bool = True,
+    baselines: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     """Phase 6: Generate all diagnostic plots.
 
@@ -388,8 +389,23 @@ def phase_plots(
         mc, R_star, clearance_Rstar=star_clearance, save_dir=None, dpi=dpi,
     ), "star_proximity_distribution.png")
 
-    # Energy CDF
-    _save(plot_energy_cdf(mc, save_dir=None, dpi=dpi), "energy_cdf.png")
+    # Energy CDF — enriched with narrowed baselines + re-run overlay
+    cdf_kwargs: Dict[str, Any] = {}
+    if baselines:
+        narrowed_bl = baselines.get("narrowed")
+        if narrowed_bl:
+            if narrowed_bl.get("star"):
+                cdf_kwargs["E_star_narrowed"] = narrowed_bl["star"].max_energy_half_dv_vec_sq
+            if narrowed_bl.get("planet"):
+                cdf_kwargs["E_planet_narrowed"] = narrowed_bl["planet"].max_energy_half_dv_vec_sq
+    analyses_best_list = rerun.get("analyses_best", [])
+    if analyses_best_list:
+        cdf_kwargs["analyses_best"] = analyses_best_list
+    best_vec_ana = best.get("best_vec_ana")
+    if best_vec_ana:
+        cdf_kwargs["E_3body_best"] = best_vec_ana.get("energy_half_dv_vec_sq", None)
+    cdf_kwargs["system_name"] = cfg.system.name
+    _save(plot_energy_cdf(mc, save_dir=None, dpi=dpi, **cdf_kwargs), "energy_cdf.png")
 
     # Best candidate trajectory
     best_sol = best.get("best_sol")
@@ -512,6 +528,29 @@ def phase_plots(
     except Exception as e:
         if verbose:
             print(f"  ✗ 2-body heatmaps skipped: {e}")
+
+    # Trajectory tracks (requires narrowed baselines)
+    try:
+        from .plotting_twobody import plot_trajectory_tracks
+        narrowed = baselines.get("narrowed") if baselines else None
+        if narrowed is not None and narrowed.get("envelope") is not None:
+            figs_tt = plot_trajectory_tracks(
+                narrowed=narrowed,
+                sols_best=rerun.get("sols_best", []),
+                analyses_best=rerun.get("analyses_best", []),
+                cfg=cfg,
+                save_dir=str(output_dir),
+                dpi=dpi,
+            )
+            for fig_tt in figs_tt:
+                plt.close(fig_tt)
+            saved.append(str(output_dir / "trajectory_tracks_star.png"))
+            saved.append(str(output_dir / "trajectory_tracks_planet.png"))
+            if verbose:
+                print(f"  ✓ trajectory_tracks ({len(figs_tt)} figs)")
+    except Exception as e:
+        if verbose:
+            print(f"  ✗ trajectory_tracks skipped: {e}")
 
     return saved
 
@@ -747,7 +786,10 @@ def run_pipeline(
 
     # Phase 6 — Plots
     if "plots" in run_phases:
-        saved_plots = phase_plots(cfg, mc, top_idx, rerun, best, out, verbose=verbose)
+        saved_plots = phase_plots(
+            cfg, mc, top_idx, rerun, best, out,
+            verbose=verbose, baselines=baselines,
+        )
         results["saved_plots"] = saved_plots
 
     # Phase 7 — Animations

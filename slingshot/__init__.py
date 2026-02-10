@@ -64,6 +64,7 @@ from .plotting_twobody import (
     plot_encounter_2d_cartesian,
     plot_encounter_2d_trajectories,
     plot_oberth_comparison,
+    plot_trajectory_tracks,
 )
 
 from .animation import (
@@ -134,7 +135,7 @@ __all__ = [
     # Plotting — 2-body parameter-space
     'plot_poincare_heatmaps', 'plot_scattering_maps',
     'plot_encounter_2d_cartesian', 'plot_encounter_2d_trajectories',
-    'plot_oberth_comparison',
+    'plot_oberth_comparison', 'plot_trajectory_tracks',
     # Animation
     'animate_trajectory', 'animate_phase_space', 'generate_all_animations',
     # Config

@@ -11,6 +11,7 @@ Plot categories:
     4. Cartesian encounter + trajectory overlay
     5. Spatial energy/flux density heatmap
     6. Oberth comparison maps
+    7. Trajectory tracks — coloured by orbital energy
 """
 
 import numpy as np
@@ -19,9 +20,9 @@ from matplotlib.patches import Circle
 from matplotlib.lines import Line2D
 from scipy.ndimage import gaussian_filter
 from pathlib import Path
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Tuple, Dict, Any
 
-from .constants import G_KM
+from .constants import G_KM, M_SUN, M_JUP, R_SUN, R_JUP
 
 # ---------------------------------------------------------------------------
 #  Resolve path to TwoBodyScatter at import time
@@ -518,5 +519,230 @@ def plot_oberth_comparison(
         tag = body_label.lower().replace(" ", "_")
         fig1.savefig(save_dir / f"oberth_comparison_{tag}.png", dpi=dpi, bbox_inches="tight")
         fig2.savefig(save_dir / f"oberth_gain_{tag}.png", dpi=dpi, bbox_inches="tight")
+
+    return figs
+
+
+# ---------------------------------------------------------------------------
+#  7. Trajectory tracks — coloured by orbital energy
+# ---------------------------------------------------------------------------
+
+def plot_trajectory_tracks(
+    narrowed: Dict[str, Any],
+    sols_best: List[Any],
+    analyses_best: List[Dict[str, Any]],
+    cfg: Any,
+    *,
+    num_b: int = 150,
+    num_angles: int = 50,
+    num_points: int = 200,
+    padding_frac: float = 0.20,
+    save_dir: Optional[str] = None,
+    dpi: int = 150,
+) -> List[plt.Figure]:
+    """Trajectory tracks for star and planet 2-body baselines (separate figs).
+
+    Each figure shows hyperbolic trajectories coloured by specific orbital
+    energy (½ΔV², km²/s²) with 3-body candidate tracks overlaid in cyan.
+    Axes are clamped to the extent of the 3-body candidates + padding.
+
+    Parameters
+    ----------
+    narrowed : dict
+        Output from ``compute_narrowed_baselines`` with keys
+        ``"envelope"``, ``"star"``, ``"planet"``.
+    sols_best : list of OdeResult
+        Re-run 3-body solutions for top candidates.
+    analyses_best : list of dict
+        Matching analysis dicts (planet-frame).
+    cfg : FullConfig
+        Configuration (used for masses, radii, system name).
+    num_b, num_angles : int
+        2-body scan resolution  (total = num_b × num_angles per body).
+    num_points : int
+        Position samples per trajectory.
+    padding_frac : float
+        Fractional padding around 3-body extent.
+    save_dir : str or None
+        Directory to save to.
+    dpi : int
+        Output resolution.
+
+    Returns
+    -------
+    list of matplotlib.figure.Figure
+        One figure per scattering body (star, planet).
+    """
+    from .twobody import TwoBodyEncounter, TrajectoryResult
+
+    envelope = narrowed.get("envelope")
+    if envelope is None:
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.text(0.5, 0.5, "No envelope — skipped",
+                ha="center", va="center", fontsize=14, transform=ax.transAxes)
+        return [fig]
+
+    # ------------------------------------------------------------------
+    # 1.  Collect 3-body candidate positions (km) for axis limits
+    # ------------------------------------------------------------------
+    all_x, all_y = [], []
+    for sol in sols_best:
+        if sol is not None:
+            x3 = sol.y[0] - sol.y[4]   # sat_x – planet_x  (planet frame)
+            y3 = sol.y[1] - sol.y[5]   # sat_y – planet_y
+            all_x.append(x3)
+            all_y.append(y3)
+
+    if all_x:
+        all_x = np.concatenate(all_x)
+        all_y = np.concatenate(all_y)
+    else:
+        # Fallback: use envelope b range
+        span = envelope.b_max * 2
+        all_x = np.array([-span, span])
+        all_y = np.array([-span, span])
+
+    x_lo, x_hi = float(all_x.min()), float(all_x.max())
+    y_lo, y_hi = float(all_y.min()), float(all_y.max())
+    # Ensure square with padding
+    cx, cy = 0.5 * (x_lo + x_hi), 0.5 * (y_lo + y_hi)
+    half = max(x_hi - x_lo, y_hi - y_lo) * 0.5 * (1 + padding_frac)
+    xlim = (cx - half, cx + half)
+    ylim = (cy - half, cy + half)
+
+    # Convert limits to display units (×10⁹ km)
+    SCALE = 1e9
+    xlim_d = (xlim[0] / SCALE, xlim[1] / SCALE)
+    ylim_d = (ylim[0] / SCALE, ylim[1] / SCALE)
+
+    # ------------------------------------------------------------------
+    # 2.  Build encounters & run scans
+    # ------------------------------------------------------------------
+    M_star_kg = cfg.system.M_star_Msun * M_SUN
+    M_planet_kg = cfg.system.M_planet_Mjup * M_JUP
+    R_star_km = getattr(cfg.system, "R_star_Rsun", 1.0) * R_SUN
+    R_planet_km = getattr(cfg.system, "R_planet_Rjup", 1.155) * R_JUP
+
+    bodies = [
+        ("Star",   M_star_kg,  R_star_km),
+        ("Planet", M_planet_kg, R_planet_km),
+    ]
+
+    # Envelope-derived scan parameters
+    v_approach = 0.5 * (envelope.v_approach_min + envelope.v_approach_max)
+    vstar0 = envelope.vstar0
+
+    if envelope.b_min > 0:
+        b_values = np.logspace(
+            np.log10(envelope.b_min),
+            np.log10(envelope.b_max),
+            num_b,
+        )
+    else:
+        b_values = np.linspace(envelope.b_min, envelope.b_max, num_b)
+
+    angle_values = np.linspace(envelope.angle_min, envelope.angle_max, num_angles)
+    r_start = 1.0e11  # km — far enough for asymptotic approach
+    if hasattr(cfg, "two_body") and cfg.two_body is not None:
+        r_start = cfg.two_body.r_start_km
+
+    scan_results: Dict[str, List[TrajectoryResult]] = {}
+    for label, M_kg, R_km in bodies:
+        enc = TwoBodyEncounter(M_kg, G_KM, label=label.lower(), R_body_km=R_km)
+        trajs, _energies, _grid = enc.scan_parameter_space(
+            v_approach=v_approach,
+            vstar0=vstar0,
+            r_start=r_start,
+            b_values=b_values,
+            angle_values=angle_values,
+            num_points=num_points,
+        )
+        scan_results[label] = trajs
+
+    # ------------------------------------------------------------------
+    # 3.  One figure per body
+    # ------------------------------------------------------------------
+    cmap = plt.cm.get_cmap("twilight")
+    sys_name = getattr(cfg.system, "name", "")
+    envelope_line = (
+        f"Envelope: v ∈ [{envelope.v_approach_min:.1f}, {envelope.v_approach_max:.1f}] km/s   "
+        f"b ∈ [{envelope.b_min:.2e}, {envelope.b_max:.2e}] km   "
+        f"α ∈ [{np.degrees(envelope.angle_min):.0f}°, {np.degrees(envelope.angle_max):.0f}°]"
+    )
+
+    figs: List[plt.Figure] = []
+
+    for label, _M, _R in bodies:
+        trajs = scan_results[label]
+        fig, ax = plt.subplots(figsize=(13, 11))
+
+        # Colour normalisation from this body's energy range
+        valid_e = np.array([t.orbital_energy for t in trajs if t.valid])
+        if len(valid_e) == 0:
+            ax.text(0.5, 0.5, f"{label}: no valid trajectories",
+                    ha="center", va="center", fontsize=14,
+                    transform=ax.transAxes)
+            figs.append(fig)
+            continue
+
+        norm = plt.Normalize(vmin=valid_e.min(), vmax=valid_e.max())
+
+        # 2-body trajectory curves
+        for traj in trajs:
+            if not traj.valid or len(traj.x_star) == 0:
+                continue
+            x = traj.x_star / SCALE
+            y = traj.y_star / SCALE
+            colour = cmap(norm(traj.orbital_energy))
+            ax.plot(x, y, lw=0.8, color=colour, alpha=0.55, zorder=2)
+
+        # 3-body candidate overlays
+        for sol in sols_best:
+            if sol is None:
+                continue
+            x3 = (sol.y[0] - sol.y[4]) / SCALE
+            y3 = (sol.y[1] - sol.y[5]) / SCALE
+            ax.plot(x3, y3, lw=1.6, color="cyan", alpha=0.85, zorder=5)
+
+        # Scattering body marker at origin
+        ax.plot(0, 0, "*", color="gold", markersize=20,
+                markeredgecolor="black", markeredgewidth=1.0, zorder=10)
+
+        # Colourbar
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        cb = fig.colorbar(sm, ax=ax, shrink=0.78, pad=0.02)
+        cb.set_label("½ΔV²  (km²/s² ≡ MJ/kg)", fontsize=12)
+
+        # Legend
+        legend_elements = [
+            Line2D([0], [0], color="cyan", lw=2, label="3-body candidates"),
+            Line2D([0], [0], marker="*", color="w", markerfacecolor="gold",
+                   markersize=14, markeredgecolor="black",
+                   label=f"Scattering body ({label.lower()})"),
+        ]
+        ax.legend(handles=legend_elements, loc="upper left", fontsize=11)
+
+        # Axis cosmetics
+        ax.set_xlim(xlim_d)
+        ax.set_ylim(ylim_d)
+        ax.set_xlabel("X  (×10⁹ km)", fontsize=12)
+        ax.set_ylabel("Y  (×10⁹ km)", fontsize=12)
+        ax.set_title(
+            f"{label} Scattering Trajectory Tracks — {sys_name}\n"
+            f"{len(trajs)} trajectories  |  {envelope_line}",
+            fontsize=13, fontweight="bold",
+        )
+        ax.set_aspect("equal")
+        ax.grid(True, alpha=0.2, linestyle="--")
+        fig.tight_layout()
+
+        if save_dir:
+            tag = label.lower()
+            p = Path(save_dir)
+            fig.savefig(p / f"trajectory_tracks_{tag}.png",
+                        dpi=dpi, bbox_inches="tight")
+
+        figs.append(fig)
 
     return figs
