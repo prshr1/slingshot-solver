@@ -99,6 +99,7 @@ def phase_monte_carlo(cfg: FullConfig, verbose: bool = True) -> Dict[str, Any]:
         impact_param_max_AU=cfg.sampling.impact_param_max_AU,
         angle_in_min_deg=cfg.sampling.angle_in_min_deg,
         angle_in_max_deg=cfg.sampling.angle_in_max_deg,
+        r_init_AU=cfg.sampling.r_init_AU,
         # Numerical
         rtol=cfg.numerical.rtol,
         atol=cfg.numerical.atol,

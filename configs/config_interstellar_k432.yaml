@@ -42,6 +42,13 @@ sampling:
   angle_in_min_deg: -90.0
   angle_in_max_deg: 90.0
 
+  # Starting distance override (AU).  When set, ALL particles begin at
+  # this fixed barycentric distance instead of the default 2× impact_param.
+  # Useful when you want consistent integration baselines regardless of b.
+  # Omit or set to null to keep the default adaptive behaviour.
+  
+  r_init_AU: 3
+
   # Planet-frame mode parameters (alternative, unused here)
   r_min_factor: 10
   r_max_factor: 500.0
@@ -67,7 +74,7 @@ numerical:
   star_min_clearance_Rstar: 2.0
 
 pipeline:
-  N_particles: 1200
+  N_particles: 3000
   t_mc_max_sec: 5e7
   t_best_max_sec: 5e7
   n_eval_best: 0

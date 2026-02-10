@@ -71,6 +71,7 @@ class SamplingConfig(BaseModel):
     impact_param_max_AU: float = Field(default=3.0, ge=0.01, description="Max impact parameter (AU)")
     angle_in_min_deg: float = Field(default=-60.0, ge=-180.0, le=180.0, description="Min incoming angle (deg)")
     angle_in_max_deg: float = Field(default=60.0, ge=-180.0, le=180.0, description="Max incoming angle (deg)")
+    r_init_AU: Optional[float] = Field(default=None, ge=0.01, description="Fixed initial distance from barycenter (AU). If None, defaults to 2× impact parameter.")
     
     # Planet-frame mode parameters
     r_min_factor: Optional[float] = Field(default=20.0, ge=1.0, description="Min radius in R_planet units")

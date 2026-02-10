@@ -281,6 +281,7 @@ def run_monte_carlo(
             impact_param_max_AU=sampling_kwargs.get('impact_param_max_AU', 3.0),
             angle_in_min_deg=sampling_kwargs.get('angle_in_min_deg', -60.0),
             angle_in_max_deg=sampling_kwargs.get('angle_in_max_deg', 60.0),
+            r_init_AU=sampling_kwargs.get('r_init_AU', None),
             rng=rng,
         )
     elif sampling_mode == "planet":

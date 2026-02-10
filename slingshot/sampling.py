@@ -18,6 +18,7 @@ def sample_satellite_state_barycentric(
     impact_param_max_AU: float = 3.0,
     angle_in_min_deg: float = -60.0,
     angle_in_max_deg: float = 60.0,
+    r_init_AU: Optional[float] = None,
     rng: Optional[np.random.Generator] = None,
 ) -> np.ndarray:
     """
@@ -47,6 +48,9 @@ def sample_satellite_state_barycentric(
         Min incoming angle (degrees from radial)
     angle_in_max_deg : float
         Max incoming angle (degrees)
+    r_init_AU : float, optional
+        Fixed initial distance from barycenter (AU). If None, defaults to
+        2× the sampled impact parameter.
     rng : np.random.Generator, optional
         Random number generator. If None, creates new one.
     
@@ -76,8 +80,11 @@ def sample_satellite_state_barycentric(
         
         # Asymptotic position and velocity in hyperbolic encounter frame
         # r_init must be >> a_planet (~0.09 AU) but need not be 10× b.
-        # 2× impact_param is sufficient and keeps integration times manageable.
-        r_init = 2.0 * impact_param
+        # Use explicit r_init_AU if provided, otherwise 2× impact_param.
+        if r_init_AU is not None:
+            r_init = r_init_AU * AU_KM
+        else:
+            r_init = 2.0 * impact_param
         
         # Local coordinates: x = radial inward, y = impact parameter direction
         x_local = -r_init  # approaching from negative side
