@@ -67,7 +67,7 @@ numerical:
   star_min_clearance_Rstar: 2.0
 
 pipeline:
-  N_particles: 24000
+  N_particles: 1200
   t_mc_max_sec: 5e7
   t_best_max_sec: 5e7
   n_eval_best: 0
