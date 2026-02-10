@@ -13,7 +13,7 @@ from typing import Optional, Dict, Any, List
 
 def animate_trajectory(
     sol: object,
-    output_dir: str = "./frames",
+    output_dir: str = "./results/frames",
     output_format: str = "mp4",
     fps: int = 30,
     figsize: tuple = (10, 10),
@@ -161,7 +161,7 @@ def animate_trajectory(
 
 def animate_phase_space(
     sol: object,
-    output_dir: str = "./frames",
+    output_dir: str = "./results/frames",
     output_format: str = "mp4",
     fps: int = 30,
 ) -> str:
@@ -273,7 +273,7 @@ def animate_phase_space(
 
 def generate_all_animations(
     sol: object,
-    output_dir: str = "./frames",
+    output_dir: str = "./results/frames",
     video_fps: int = 30,
     video_format: str = "mp4",
     animate_trajectory: bool = True,

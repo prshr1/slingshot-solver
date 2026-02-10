@@ -1,359 +1,454 @@
-﻿# Slingshot Solver v2.0
+﻿# Slingshot Solver v2.4
 
-**Modular, production-ready Python package for studying gravitational slingshot (gravity assist) dynamics in restricted 3-body systems.**
+**Modular Python package for studying gravitational slingshot (gravity-assist) dynamics in restricted 3-body systems, with a focus on interstellar-velocity encounters.**
 
-Star + Hot Jupiter + Satellite orbital mechanics with Monte Carlo simulations, configurable analysis, and video animation.
+Star + Hot Jupiter + Satellite orbital mechanics with Monte Carlo simulations, 2-body baselines, star-proximity filtering, planet-frame diagnostics, auto-generated reports, and video animation.
+
+**Canonical unit system**: km-kg-s throughout. Energies in km²/s² (≡ MJ/kg).
 
 ---
 
-## ✨ Quick Start
+## Quick Start
 
 ### Install
-\\\ash
+
+```bash
 cd slingshot-solver
-pip install -e .
-\\\
+pip install -r requirements.txt
+```
 
-### Run Example
-\\\python
-import slingshot
+### One-Command Pipeline (recommended)
 
-# Load config
-cfg = slingshot.load_config('config_default.yaml')
+```bash
+python run.py configs/config_kepler432_case.yaml
+```
 
-# Run Monte Carlo
-mc = slingshot.run_monte_carlo(
-    N=3000,
-    frame="barycentric",
-    m_star=1.19 * 1.98847e30,  # kg
-    m_p=5.2 * 1.898e27,         # kg
-    ...
-)
+This runs the full 8-phase pipeline and produces a timestamped results directory:
 
-# Select top candidates
-top_idx = slingshot.select_top_indices(mc, top_frac=0.10)
+```
+results/results_Kepler-432_YYYYMMDD_HHMMSS/
+├── config.yaml          # Frozen copy of the config used
+├── summary.csv          # All candidates ranked by ΔV
+├── results.pkl          # Full MC data + rerun solutions (pickle)
+├── REPORT.md            # Auto-generated analysis report
+├── *.png                # All diagnostic plots
+└── frames/              # Animation frames (if enabled)
+```
 
-# Visualize
-slingshot.plot_mc_summary(mc)
-slingshot.generate_all_animations(mc['results'][top_idx[0]]['sol'])
-\\\
+#### CLI Options
 
-### Or Use Jupyter Notebook
-\\\ash
-jupyter notebook ThreeBodySolver_v2.ipynb
-\\\
+```bash
+python run.py configs/config.yaml --output-dir results/my_run   # custom output dir
+python run.py configs/config.yaml --skip-plots                   # data only, no figures
+python run.py configs/config.yaml --skip-animations              # skip video render
+python run.py configs/config.yaml --phases mc,select,rerun       # run only specific phases
+python run.py configs/config.yaml --quiet                        # minimal console output
+```
 
----
+### Compare Runs
 
-## 📚 Documentation
+```bash
+python run.py compare results/run_a results/run_b results/run_c
+```
 
-| Document | Purpose |
+Prints a side-by-side comparison table of system parameters, particle counts, and best ΔV from each run.
+
+### Run Individual Phases (Python)
+
+Each pipeline phase is independently callable for debugging:
+
+```python
+from slingshot.config import load_config
+from slingshot.pipeline import phase_monte_carlo, phase_select, phase_rerun
+
+cfg = load_config('configs/config_kepler432_case.yaml')
+mc = phase_monte_carlo(cfg, verbose=True)
+top_idx = phase_select(cfg, mc, verbose=True)
+rerun = phase_rerun(cfg, mc, top_idx, verbose=True)
+```
+
+### Interactive Notebook
+
+| Notebook | Purpose |
 |----------|---------|
-| **CHANGELOG.md** | v2.0 implementation details, design decisions, and reference |
-| **config_default.yaml** | Configuration template (editable) |
-| **ThreeBodySolver_v2.ipynb** | Interactive example notebook |
-| **ThreeBodySolver3.ipynb** | Original notebook (v1 reference) |
+| `ThreeBodySolver_v2.ipynb` | 3-body Monte Carlo exploration, analysis, and visualisation |
 
 ---
 
-## 🎯 Key Features
+## Architecture
 
-🔧 **Modular Architecture** - 9 focused Python modules (dynamics, analysis, sampling, MC, visualization, animation)
+```
+slingshot-solver/
+├── configs/                        # YAML configuration files
+│   ├── config_default.yaml
+│   ├── config_interstellar_k432.yaml
+│   └── config_kepler432_case.yaml
+├── results/                        # All outputs (gitignored)
+│   └── results_Kepler-432_*/       # Per-run dirs (config, plots, data, REPORT.md)
+├── slingshot/                      # Core Python package
+│   ├── __init__.py
+│   ├── constants.py                # G_KM, M_SUN, M_JUP, R_JUP, R_SUN, AU_KM
+│   ├── config.py                   # Pydantic config models + YAML loader
+│   ├── dynamics.py                 # 3-body ODE + RK integration
+│   ├── analysis.py                 # Trajectory analysis + EncounterGeometry
+│   ├── sampling.py                 # Initial condition generation
+│   ├── monte_carlo.py              # Monte Carlo sweep + candidate selection
+│   ├── baselines.py                # 2-body hyperbola + monopole baselines
+│   ├── narrowed_baselines.py       # Post-hoc narrowed 2-body comparisons
+│   ├── twobody.py                  # TwoBodyEncounter grid-scan class
+│   ├── comparison.py               # 2-body vs 3-body cross-comparison
+│   ├── plotting.py                 # 3-body diagnostic plots (9 functions)
+│   ├── plotting_twobody.py         # 2-body heatmaps & encounter maps (5 functions)
+│   ├── animation.py                # Video rendering (trajectory + phase-space)
+│   ├── pipeline.py                 # 8-phase orchestrator
+│   ├── report.py                   # Auto-generated REPORT.md
+│   └── compare_runs.py             # Cross-run comparison tables
+├── run.py                          # CLI entry point
+├── ThreeBodySolver_v2.ipynb        # Interactive notebook
+├── TwoBodyScatter.py               # Closed-form hyperbolic solver
+├── Archive/                        # Deprecated standalone scripts (gitignored)
+├── REPORT.md                       # Latest run analysis
+├── CHANGELOG.md
+└── README.md
+```
 
-⚙️ **Configuration System** - YAML/JSON with Pydantic validation (no hardcoded parameters)
+### Data Flow
 
-🎬 **Video Animation** - Trajectory + phase-space animations (MP4/GIF)
-
-⚡ **Parallelization** - ProcessPoolExecutor for 3-4x speedup on MC runs
-
-📊 **Robust Analysis** - Encounter geometry extraction with error diagnostics
-
-🔬 **Baseline Comparisons** - 2-body hyperbola & monopole approximation models
-
-📈 **Production-Ready** - Full docstrings, type hints, comprehensive error handling
-
----
-
-## 📦 Package Structure
-
-\\\
-slingshot/
-├── __init__.py              # Public API
-├── config.py                # Configuration (Pydantic models + YAML loading)
-├── dynamics.py              # ODE solver & integration
-├── analysis.py              # Trajectory analysis & encounter extraction
-├── sampling.py              # Initial condition sampling
-├── monte_carlo.py           # MC orchestration & parallelization
-├── baselines.py             # Baseline models (2-body, monopole)
-├── plotting.py              # Static visualization
-└── animation.py             # Video rendering
-
-config_default.yaml          # Configuration template
-ThreeBodySolver_v2.ipynb     # Orchestration notebook
-requirements.txt             # Dependencies
-\\\
-
----
-
-## 🚀 Core Workflows
-
-### 1. Standard Pipeline
-\\\python
-from slingshot import *
-
-cfg = load_config('config.yaml')
-mc = run_monte_carlo(N=3000, ...)          # Phase 1: Monte Carlo
-top = select_top_indices(mc, top_frac=0.1) # Phase 2: Selection
-plot_mc_summary(mc)                        # Phase 3: Visualization
-\\\
-
-### 2. Parameter Sweep
-\\\python
-for n_particles in [1000, 3000, 5000]:
-    cfg.pipeline.N_particles = n_particles
-    save_config(cfg, f'run_{n_particles}.yaml')
-    # Run experiments programmatically
-\\\
-
-### 3. Custom Analysis
-\\\python
-from slingshot.dynamics import simulate_3body
-from slingshot.analysis import analyze_trajectory
-
-sol = simulate_3body(Y0, t_span, m_star, m_p)
-ana = analyze_trajectory(sol, frame="barycentric")
-print(f"Δv = {ana['delta_v']:.2f} km/s")
-\\\
+```
+┌───────────────────────────────────────────────────────────┐
+│              configs/config_kepler432_case.yaml            │
+│         (Single source of truth — Pydantic schema)        │
+└─────────────────────┬─────────────────────────────────────┘
+                      │
+                      ▼
+              python run.py config.yaml
+                      │
+        ┌─────────────┼─────────────────────────┐
+        ▼             ▼                         ▼
+   Phase 1: MC    Phase 5: Baselines       Phase 6: Plots
+   monte_carlo    baselines.py             plotting.py
+   sampling.py    narrowed_baselines.py    plotting_twobody.py
+        │         comparison.py                 │
+        ▼             │                         │
+   Phase 2: Select    │                    Phase 7: Animations
+   Phase 3: Rerun     │                    animation.py
+   Phase 4: Best      │                         │
+        │             │                         │
+        └─────────────┴─────────────────────────┘
+                      │
+                      ▼
+              Phase 8: Save + Report
+              report.py → REPORT.md
+              results/results_Kepler-432_YYYYMMDD_HHMMSS/
+```
 
 ---
 
-## 📋 Physics Model
+## Unit System
 
-**Restricted Planar 3-Body Problem (PCR3BP)**
+All modules use **km-kg-s** consistently:
 
-System: Star + Hot Jupiter + Satellite  
-Integration: High-precision ODE (RK45, rtol=1e-10, atol=1e-10)  
-Frames: Barycentric inertial & planet-relative
+| Quantity | Unit | Note |
+|----------|------|------|
+| Distance | km | |
+| Velocity | km/s | |
+| Mass | kg | |
+| Time | s | |
+| Energy | km²/s² | ≡ MJ/kg (since 1 km²/s² = 10⁶ J/kg) |
+| G | 6.67430 × 10⁻²⁰ km³ kg⁻¹ s⁻² | `slingshot.constants.G_KM` |
+| μ | km³/s² | G × M |
 
-**Key Metrics:**
-- Velocity change (Δv): Energy gain from slingshot encounter
-- Deflection angle: Angular deviation of exit velocity
-- Specific energy: Determines escape vs. bound trajectories
-- Impact parameter: Encounter strength
+Constants are defined **once** in `slingshot/constants.py` and imported by every module.
 
 ---
 
-## 🔧 Configuration
+## Configuration
 
-Edit \config_default.yaml\ or create custom configs:
+Configs live in `configs/`. Edit or create new ones:
 
-\\\yaml
+```yaml
 system:
-  name: Kepler-432              # System identifier
-  M_star_Msun: 1.19            # Star mass
-  M_planet_Mjup: 5.2           # Planet mass
-  a_planet_AU: 0.0896          # Orbital semi-major axis
+  name: Kepler-432
+  M_star_Msun: 1.19
+  R_star_Rsun: 4.06
+  M_planet_Mjup: 5.2
+  R_planet_Rjup: 1.155
+  a_planet_AU: 0.0896
 
 sampling:
-  mode: barycentric            # or "planet"
-  v_mag_min_kms: 10.0          # Velocity range
+  mode: barycentric
+  v_mag_min_kms: 10.0
   v_mag_max_kms: 120.0
-  impact_param_min_AU: 0.5     # Impact parameter range
+  impact_param_min_AU: 0.5
   impact_param_max_AU: 3.0
 
-pipeline:
-  N_particles: 3000            # Monte Carlo size
-  t_mc_max_sec: 1.0e7          # Simulation duration
-  select_metric: bary_delta_v_pct
-  n_parallel: null             # null=serial, N=parallel workers
+numerical:
+  rtol: 1.0e-10
+  atol: 1.0e-10
+  star_min_clearance_Rstar: 1.0   # reject star-penetrating orbits
 
-visualization:
-  render_video: true
-  animate_trajectory: true
-  animate_phase_space: true
-\\\
+pipeline:
+  N_particles: 3000
+  t_mc_max_sec: 1.0e7
+  select_metric: bary_delta_v_pct
+  n_parallel: null
+```
+
+Load in Python:
+
+```python
+from slingshot.config import load_config
+cfg = load_config('configs/config_kepler432_case.yaml')
+```
 
 ---
 
-## 🎬 Animations
+## Core Workflows
 
-Automatically generates videos for each test case:
+### 1. Full Pipeline (One Command)
 
-- **Type A** (Trajectory): Star/planet/satellite paths with trailing history
-- **Type B** (Phase-space): Velocity evolution (v_radial vs v_normal)
-- **Type C** (Comparison): Framework for multi-trajectory overlays (extensible)
+```bash
+python run.py configs/config_kepler432_case.yaml
+```
 
-\\\python
+Runs all 8 phases: MC → Select → Rerun → Best → Baselines → Plots → Animations → Save. Produces a timestamped results directory with `REPORT.md`, all diagnostic plots, and pickled data.
+
+### 2. Individual Phases (Python)
+
+```python
+from slingshot.config import load_config
+from slingshot.pipeline import (
+    phase_monte_carlo, phase_select, phase_rerun,
+    phase_best_selection, phase_baselines, phase_plots,
+)
+
+cfg = load_config('configs/config_kepler432_case.yaml')
+mc = phase_monte_carlo(cfg, verbose=True)
+top_idx = phase_select(cfg, mc, verbose=True)
+rerun = phase_rerun(cfg, mc, top_idx, verbose=True)
+best = phase_best_selection(
+    rerun["analyses"], top_idx, rerun["solutions"], verbose=True
+)
+baselines = phase_baselines(cfg, rerun["analyses"], best["best_vec_ana"], verbose=True)
+```
+
+### 3. Two-Body Heatmaps
+
+Config-driven 2-body encounter visualisations (Poincaré maps, scattering maps, Cartesian encounters, Oberth comparison):
+
+```python
+from slingshot.plotting_twobody import plot_poincare_heatmaps, plot_scattering_maps
+
+figs = plot_poincare_heatmaps(
+    M_body_kg=5.2 * 1.898e27,
+    v_inf_kms=30.0,
+    vstar0_kms=0.0,
+    body_label="Planet",
+    save_dir="results/figures",
+)
+```
+
+These are also auto-generated by the pipeline when `visualization.generate_2body_heatmaps: true` in the config.
+
+### 4. Cross-Run Comparison
+
+```python
+from slingshot.compare_runs import compare_runs, print_comparison
+
+print_comparison(["results/run_a", "results/run_b"])
+```
+
+Or from the CLI:
+
+```bash
+python run.py compare results/run_a results/run_b
+```
+
+### 5. Animations
+
+```python
 from slingshot.animation import generate_all_animations
 
 animations = generate_all_animations(
-    sol,
-    output_dir="./frames",
+    best_sol,
+    output_dir="./results/frames",
     video_fps=30,
-    video_format="mp4"  # or "gif"
+    video_format="mp4",
 )
-\\\
+```
 
 ---
 
-## ⚡ Performance
+## API Reference
 
-**Typical Runtime** (N=3000 particles, Kepler-432):
+### Constants (`slingshot.constants`)
+
+| Symbol | Value | Description |
+|--------|-------|-------------|
+| `G_KM` | 6.67430e-20 | Gravitational constant [km³ kg⁻¹ s⁻²] |
+| `M_SUN` | 1.98847e30 | Solar mass [kg] |
+| `M_JUP` | 1.898e27 | Jupiter mass [kg] |
+| `R_JUP` | 71492.0 | Jupiter radius [km] |
+| `R_SUN` | 696000.0 | Solar radius [km] |
+| `AU_KM` | 1.495978707e8 | Astronomical unit [km] |
+
+Helpers: `mu_star(M_Msun)`, `mu_planet(M_Mjup)`, `au_to_km(au)`, `km_to_au(km)`
+
+### Dynamics (`slingshot.dynamics`)
+
+- `simulate_3body(Y0, t_span, m_star, m_p, n_eval, rtol, atol)` — RK45 integration
+- `init_hot_jupiter_barycentric(a_km, m_star, m_p, phase, prograde)` — initial conditions
+
+### Analysis (`slingshot.analysis`)
+
+- `analyze_trajectory(sol, frame, m_star, m_p, R_p, ...)` — unified trajectory analysis
+- `extract_encounter_states(sol, m_p, R_p, ...)` → `EncounterGeometry`
+
+### Monte Carlo (`slingshot.monte_carlo`)
+
+- `run_monte_carlo(N, t_span, m_star, m_p, frame, ...)` — full MC sweep
+- `select_top_indices(mc, metric, sign, top_frac)` — flexible ranking
+
+### Two-Body (`slingshot.twobody`)
+
+- `TwoBodyEncounter(M_body_kg, G, label)` — encounter manager
+- `TwoBodyEncounter.scan_parameter_space(...)` — grid scan over b × angle
+- `TwoBodyEncounter.get_energy_statistics(energies)` — distribution stats
+- `create_encounter_from_config(cfg)` — star scattering factory
+- `create_planet_encounter_from_config(cfg)` — planet scattering factory
+- Data classes: `TwoBodyGeometry`, `TrajectoryResult`
+
+### Comparison (`slingshot.comparison`)
+
+- `compare_2body_3body(...)` → dict with ΔE, % improvement
+- `format_energy(value)` → readable string
+- `print_comparison(comp)` → formatted output
+
+### Visualisation (`slingshot.plotting`, `slingshot.plotting_twobody`, `slingshot.animation`)
+
+**3-body diagnostics** (`plotting`):
+- `plot_mc_summary(mc)` — scatter + histogram overview
+- `plot_best_candidate_with_bodies(sol, ana, ...)` — trajectory with bodies
+- `plot_velocity_phase_space(sol)` — velocity evolution
+- `plot_star_proximity_distribution(mc, R_star_km, ...)` — r_min/R★ histogram
+- `plot_planet_frame_diagnostics(analyses, ...)` — 4-panel planet-frame bar charts
+- `plot_multi_candidate_overlay(sols, analyses, ...)` — top-N trajectories overlay
+- `plot_rejection_breakdown(mc, ...)` — horizontal bar chart of rejection reasons
+- `plot_parameter_correlations(mc, ...)` — 4-panel scatter matrix
+- `plot_energy_cdf(mc, ...)` — CDF of ½|ΔV_vec|² with percentile markers
+
+**2-body encounter maps** (`plotting_twobody`):
+- `plot_poincare_heatmaps(M_body_kg, v_inf_kms, ...)` — multi-panel Poincaré heatmaps
+- `plot_scattering_maps(M_body_kg, v_approach_kms, ...)` — scattering angle maps
+- `plot_encounter_2d_cartesian(M_body_kg, ...)` — Cartesian encounter grids
+- `plot_encounter_2d_trajectories(M_body_kg, ...)` — multi-scenario trajectory comparison
+- `plot_oberth_comparison(M_body_kg, ...)` — no-burn vs Oberth manoeuvre comparison
+
+**Animation** (`animation`):
+- `animate_trajectory(sol, ...)`, `animate_phase_space(sol, ...)`
+- `generate_all_animations(sol, ...)` — orchestrate all video types
+
+### Pipeline (`slingshot.pipeline`)
+
+- `run_pipeline(config_path, output_dir, phases, skip_plots, skip_animations, verbose)` — full 8-phase orchestrator
+- `phase_monte_carlo(cfg, verbose)` — Monte Carlo sweep
+- `phase_select(cfg, mc, verbose)` — candidate ranking
+- `phase_rerun(cfg, mc, top_idx, verbose)` — re-integrate top candidates
+- `phase_best_selection(analyses, top_idx, sols, verbose)` — find best by scalar/vector ΔV
+- `phase_baselines(cfg, analyses, best_ana, verbose)` — 2-body comparison baselines
+- `phase_plots(cfg, mc, top_idx, rerun, best, output_dir, verbose)` — all diagnostic plots
+- `phase_animations(cfg, best_sol, output_dir, verbose)` — video rendering
+- `phase_save(cfg, mc, top_idx, rerun, best, baselines, output_dir, verbose)` — persist results
+
+### Report & Comparison (`slingshot.report`, `slingshot.compare_runs`)
+
+- `generate_run_report(output_dir, cfg, mc, analyses, best, comparison, narrowed, plots)` — auto-generate REPORT.md
+- `compare_runs(run_dirs)` — load and cross-compare multiple result directories
+- `print_comparison(run_dirs)` — formatted comparison table
+
+### Configuration (`slingshot.config`)
+
+- `load_config(path)` → `FullConfig` (Pydantic-validated)
+- `save_config(cfg, path)` — export to YAML
+- Models: `SystemConfig`, `SamplingConfig`, `NumericalConfig`, `PipelineConfig`, `VisualizationConfig`, `TwoBodyConfig`, `FullConfig`
+
+---
+
+## Performance
+
+**Typical runtime** (Kepler-432, N = 3000):
 
 | Mode | Duration | Notes |
 |------|----------|-------|
-| Serial | 2-3 hours | Single-threaded |
-| Parallel (4 cores) | 40-50 min | 3-4x speedup |
-
-Enable parallelization in config:
-\\\yaml
-pipeline:
-  n_parallel: 4  # Use 4 worker processes
-\\\
+| 2-body scan (150 × 200) | 30–60 s | Single-threaded |
+| 3-body MC (serial) | 2–3 hours | Single-threaded |
+| 3-body MC (4 cores) | 40–50 min | `n_parallel: 4` |
 
 ---
 
-## 📊 Key Improvements from v1
-
-| Feature | v1 | v2 |
-|---------|----|----|
-| Code Structure | Monolithic (1,200 lines) | Modular (9 modules, 2,250 LOC) |
-| Configuration | Hardcoded | External YAML/JSON |
-| Duplication | ~400 lines | 0 lines |
-| Parallelization | ❌ | ✅ ProcessPoolExecutor |
-| Animation | ❌ | ✅ Type A+B + framework |
-| Robustness | ⚠️ | ✅ EncounterGeometry class |
-| Error Diagnostics | Minimal | Detailed reason codes |
-| Reproducibility | Manual | Config files |
-| Testability | Difficult | Modular functions |
-
----
-
-## 🛠️ API Reference
-
-### Core Functions
-
-**Dynamics**
-\\\python
-simulate_3body(Y0, t_span, m_star, m_p, n_eval, rtol, atol)
-\\\
-
-**Analysis**
-\\\python
-analyze_trajectory(sol, frame="barycentric"|"planet", ...)
-extract_encounter_states(sol, m_p, R_p, ...)
-\\\
-
-**Sampling**
-\\\python
-sample_satellite_state_barycentric(Y_sp0, N, v_mag_min, ...)
-sample_satellite_state_near_planet(Y_sp0, N, r_min, ...)
-\\\
-
-**Monte Carlo**
-\\\python
-run_monte_carlo(N, t_span, m_star, m_p, frame, ..., n_parallel=None)
-select_top_indices(mc, metric, sign, top_frac)
-\\\
-
-**Visualization**
-\\\python
-plot_mc_summary(mc)
-plot_best_candidate_with_bodies(sol, analysis)
-generate_all_animations(sol, output_dir, ...)
-\\\
-
-**Configuration**
-\\\python
-load_config(path)
-save_config(cfg, path)
-load_system_config(system_name)  # Kepler-432, TOI-1431, etc.
-\\\
-
-See module docstrings for full parameter documentation.
-
----
-
-## 🔍 Troubleshooting
+## Troubleshooting
 
 **ImportError: No module named 'slingshot'**
-\\\ash
-pip install -e .
-\\\
 
-**ValidationError loading config**
-- Check YAML syntax (spaces, types)
-- Verify all required fields present
-- See \config.py\ for schema
+```bash
+pip install -r requirements.txt
+# or ensure you run from the workspace root
+```
 
-**Parallelization not working**
-- Ensure \
-_parallel > 1\ in config
-- Check disk space for temp files
-- Try \
-_parallel=None\ (serial mode)
+**ValidationError loading config** — Check YAML syntax and field names; see `slingshot/config.py` for the Pydantic schema.
 
-**Animation generation fails**
-- Install ffmpeg: \fmpeg -version\
-- Check disk space
-- Try GIF format: \ideo_format: gif\
+**Old SI units (m-kg-s)** — All code is now km-kg-s. If values are 10⁶× too large, you may be using an outdated config. Energy: 1 km²/s² = 1 MJ/kg. Old J/kg results should be divided by 10⁶.
+
+**Parallelisation not working** — Set `pipeline.n_parallel` to an integer > 1.
+
+**Animation generation fails** — Ensure `ffmpeg` is installed (`ffmpeg -version`). Try GIF format as fallback.
 
 ---
 
-## 🔗 Related Files
+## Requirements
 
-- **Original Project**: \ThreeBodySolver3.ipynb\ (v1 reference)
-- **System Presets**: \config_default.yaml\
-- **Dependencies**: \equirements.txt\
-- **Notebooks**: \ThreeBodySolver_v2.ipynb\ (orchestration example)
-
----
-
-## 📖 For More Information
-
-See **CHANGELOG.md** for:
-- Detailed implementation summary
-- Design decisions and rationale
-- Extensibility guide
-- Architecture and API details
-- Complete documentation map
-
----
-
-## 🎓 Learning Path
-
-1. **Install & setup** (5 min): Run installation & load config
-2. **Run example** (15 min): Execute \ThreeBodySolver_v2.ipynb\
-3. **Customize** (10 min): Modify config, change parameters
-4. **Explore** (30+ min): Examine modules, write custom analyses
-5. **Extend** (optional): Add new analysis/animation types
-
----
-
-## 📝 Requirements
-
-\\\
+```
 numpy
 scipy
 matplotlib
 pyyaml
 pydantic
-\\\
+```
 
-Optional:
-- ffmpeg-python (for advanced video features)
-- pytest (development/testing)
+Optional: `ffmpeg-python` (video), `pandas` (tables), `pytest` (testing)
 
 ---
 
-## 📄 License
+## v1 → v2.4 Improvements
+
+| Feature | v1 | v2.4 |
+|---------|-----|------|
+| Structure | monolithic notebook | 17 modules + CLI |
+| Units | mixed (m-kg-s / km-kg-s) | km-kg-s everywhere |
+| Constants | hardcoded in 9+ places | single `constants.py` |
+| Config | hardcoded | YAML + Pydantic validation |
+| Workflow | manual cell-by-cell | `python run.py config.yaml` (one command) |
+| 2-body baselines | star only | star + planet + both |
+| 2-body visualisation | 6 standalone scripts | absorbed into `plotting_twobody.py` |
+| Star filtering | none | configurable R★ clearance |
+| Planet-frame diagnostics | none | EncounterGeometry with planet reference |
+| Diagnostic plots | 3 | 14 (9 three-body + 5 two-body) |
+| Output organisation | root directory | `results/` with per-run dirs |
+| Reporting | manual | auto-generated REPORT.md |
+| Run comparison | none | `compare_runs.py` + CLI subcommand |
+| Duplication | ~400 lines | eliminated |
+| Parallelisation | none | ProcessPoolExecutor |
+| Animation | none | trajectory + phase-space video |
+| Cross-solver comparison | placeholder | `comparison.py` with formatted output |
+| Error diagnostics | minimal | EncounterGeometry with reason codes |
+
+---
+
+## License
 
 [Specify your license here]
 
 ---
 
-**Version**: 2.0.0  
-**Status**: Production-Ready ✅  
-**Last Updated**: February 3, 2026
-
-**Start here**: Read [CHANGELOG.md](CHANGELOG.md) or open [ThreeBodySolver_v2.ipynb](ThreeBodySolver_v2.ipynb)
+**Version**: 2.4.0  
+**Last Updated**: February 2026

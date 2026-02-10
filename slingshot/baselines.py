@@ -8,11 +8,7 @@ from scipy.integrate import solve_ivp
 from typing import Optional, Dict, Any, Tuple
 
 from .analysis import EncounterGeometry
-
-
-G = 6.67430e-20  # km^3 / (kg s^2)
-M_SUN = 1.98847e30  # kg
-M_JUP = 1.898e27  # kg
+from .constants import G_KM as G, M_SUN, M_JUP
 
 
 def two_body_hyperbola_from_state(
@@ -362,6 +358,31 @@ def compare_3body_with_baselines(
     eps_3b, h_3b = energy_and_angmom(enc.r_out_bary, enc.v_out_bary, M_tot)
     eps_0, h_0 = energy_and_angmom(r_out_mono, v_out_mono, M_tot)
     
+    # Calculate deflection angle for 3-body encounter
+    # Extract velocity components from velocity vectors (handle 2D and 3D)
+    v_in_2d = enc.v_in_bary[:2] if len(enc.v_in_bary) >= 2 else enc.v_in_bary
+    v_out_2d = enc.v_out_bary[:2] if len(enc.v_out_bary) >= 2 else enc.v_out_bary
+    
+    vx_i, vy_i = float(v_in_2d[0]), float(v_in_2d[1])
+    vx_f, vy_f = float(v_out_2d[0]), float(v_out_2d[1])
+    
+    v_inf_in_mag = np.hypot(vx_i, vy_i)
+    v_inf_out_mag = np.hypot(vx_f, vy_f)
+    
+    # Calculate deflection angle safely
+    if v_inf_in_mag > 1e-6 and v_inf_out_mag > 1e-6:
+        # Dot product between incoming and outgoing velocities
+        dot_product = vx_i * vx_f + vy_i * vy_f
+        
+        # Cosine of deflection angle (clipped to [-1, 1] to avoid numerical issues)
+        cos_deflection = dot_product / (v_inf_in_mag * v_inf_out_mag)
+        cos_deflection = np.clip(float(cos_deflection), -1.0, 1.0)
+        
+        # Deflection angle in degrees
+        deflection_angle_3body = np.degrees(np.arccos(cos_deflection))
+    else:
+        deflection_angle_3body = np.nan
+    
     result = {
         "ok": True,
         "two_body": two_body,
@@ -378,6 +399,7 @@ def compare_3body_with_baselines(
         "delta_h_3b": h_3b - h_in,
         "delta_h_0": h_0 - h_in,
         "extra_h_from_planet": h_3b - h_0,
+        "deflection_3body": deflection_angle_3body,
     }
     
     if make_plots:

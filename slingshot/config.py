@@ -4,7 +4,6 @@ Supports YAML/JSON config files with Pydantic validation.
 """
 
 from typing import Optional, Literal, Dict, Any
-from dataclasses import dataclass
 import json
 from pathlib import Path
 
@@ -14,17 +13,6 @@ except ImportError:
     yaml = None
 
 from pydantic import BaseModel, Field, field_validator, ConfigDict
-
-# Physical Constants (SI units or as specified)
-@dataclass
-class PhysicalConstants:
-    """Physical constants used in simulations."""
-    G: float = 6.67430e-20  # km^3 / (kg s^2)
-    M_SUN: float = 1.98847e30  # kg
-    M_JUP: float = 1.898e27  # kg
-    R_JUP: float = 71492.0  # km
-    AU_KM: float = 1.495978707e8  # km
-    R_SUN: float = 696000.0  # km
 
 
 class SystemConfig(BaseModel):
@@ -36,6 +24,7 @@ class SystemConfig(BaseModel):
             "M_star_Msun": 1.19,
             "M_planet_Mjup": 5.2,
             "R_planet_Rjup": 1.155,
+            "R_star_Rsun": 4.06,
             "a_planet_AU": 0.0896,
         }
     })
@@ -44,6 +33,7 @@ class SystemConfig(BaseModel):
     M_star_Msun: float = Field(default=1.19, ge=0.01, le=10.0, description="Star mass in solar masses")
     M_planet_Mjup: float = Field(default=5.2, ge=0.1, le=100.0, description="Planet mass in Jupiter masses")
     R_planet_Rjup: float = Field(default=1.155, ge=0.1, le=10.0, description="Planet radius in Jupiter radii")
+    R_star_Rsun: float = Field(default=4.06, ge=0.1, le=50.0, description="Star radius in solar radii")
     a_planet_AU: float = Field(default=0.0896, ge=0.001, le=1.0, description="Orbital semi-major axis in AU")
     
     @field_validator('a_planet_AU')
@@ -102,17 +92,69 @@ class NumericalConfig(BaseModel):
         "example": {
             "rtol": 1e-10,
             "atol": 1e-10,
-            "r_far_factor": 20.0,
+            "ode_method": "DOP853",
+            "r_far_factor": 50.0,
             "min_clearance_factor": 1.05,
+            "flyby_r_min_max_hill": 10.0,
+            "escape_radius_factor": 3.0,
+            "softening_km": 1000.0,
         }
     })
     
     rtol: float = Field(default=1e-10, ge=1e-12, le=1e-6, description="Relative tolerance for ODE solver")
     atol: float = Field(default=1e-10, ge=1e-12, le=1e-6, description="Absolute tolerance for ODE solver")
     
+    # ODE solver method
+    ode_method: Literal["RK45", "RK23", "DOP853", "Radau", "BDF", "LSODA"] = Field(
+        default="DOP853",
+        description="ODE solver method. DOP853 (order 8) is best for orbital mechanics — "
+                    "far fewer steps than RK45 during close encounters. Radau is implicit "
+                    "and handles stiff close-encounter regions even better but is slower per step."
+    )
+    
     # Analysis parameters
-    r_far_factor: float = Field(default=20.0, ge=1.0, description="Distance factor for 'far' asymptotic regime")
+    r_far_factor: float = Field(default=50.0, ge=1.0, description="Distance factor for 'far' asymptotic regime (×R_planet)")
     min_clearance_factor: float = Field(default=1.05, ge=1.0, le=2.0, description="Min clearance from planet surface")
+
+    # Flyby completion filter
+    flyby_r_min_max_hill: Optional[float] = Field(
+        default=10.0, ge=0.1,
+        description="Max closest-approach distance for flyby completion, in Hill-sphere radii. "
+                    "Particles whose r_min exceeds this are rejected as incomplete flybys. "
+                    "Set to None to disable."
+    )
+
+    # Star proximity filter
+    star_min_clearance_Rstar: Optional[float] = Field(
+        default=None, ge=0.0,
+        description="Minimum allowed closest approach to the star, in units of R_star. "
+                    "Trajectories with r_min_star < star_min_clearance_Rstar × R_star "
+                    "are rejected as star-penetrating / star-dominated. "
+                    "Set to None to disable (legacy behaviour). "
+                    "Recommended: 1.0 (surface collision only) or 2.0–5.0 "
+                    "(planet-dominated encounters for slingshot research)."
+    )
+
+    # Gravitational softening
+    softening_km: float = Field(
+        default=1000.0, ge=0.0,
+        description="Plummer softening length (km) for satellite–body gravity. "
+                    "Replaces 1/r² with 1/(r²+ε²) to cap force gradients during "
+                    "close encounters, preventing adaptive-step collapse. "
+                    "Only applied to the satellite; the star–planet mutual force "
+                    "is never softened. Set to 0 for pure Newtonian gravity. "
+                    "A value ≪ R_planet (≈82 573 km) is physically invisible at "
+                    "allowed closest-approach distances."
+    )
+
+    # Escape termination
+    escape_radius_factor: float = Field(
+        default=3.0, ge=1.0,
+        description="Multiplier on the particle's initial barycentric distance for the escape "
+                    "terminal event. Integration stops when the particle recedes to "
+                    "escape_radius_factor × r0_bary after periapsis. Higher values let the "
+                    "trajectory complete the full swing before termination."
+    )
 
 
 class PipelineConfig(BaseModel):
@@ -123,7 +165,7 @@ class PipelineConfig(BaseModel):
             "N_particles": 3000,
             "t_mc_max_sec": 1e7,
             "t_best_max_sec": 1e7,
-            "n_eval_best": 1000,
+            "n_eval_best": 0,
             "top_frac": 0.10,
             "min_top": 1,
             "select_metric": "bary_delta_v_pct",
@@ -135,7 +177,7 @@ class PipelineConfig(BaseModel):
     N_particles: int = Field(default=3000, ge=1, le=100000, description="Number of test particles")
     t_mc_max_sec: float = Field(default=1e7, ge=1e4, description="Max integration time for MC sweep (seconds)")
     t_best_max_sec: float = Field(default=1e7, ge=1e4, description="Max integration time for re-run (seconds)")
-    n_eval_best: int = Field(default=1000, ge=10, description="Output points per best candidate trajectory")
+    n_eval_best: int = Field(default=0, ge=0, description="Output points per best trajectory (0 = adaptive solver steps)")
     top_frac: float = Field(default=0.10, ge=0.01, le=1.0, description="Fraction of successful cases to re-run")
     min_top: int = Field(default=1, ge=1, description="Minimum number of top candidates")
     
@@ -164,8 +206,15 @@ class VisualizationConfig(BaseModel):
             "animate_trajectory": True,
             "animate_phase_space": True,
             "animate_comparison": False,
-            "figure_dpi": 100,
+            "figure_dpi": 150,
             "figure_format": "png",
+            "generate_2body_heatmaps": True,
+            "generate_scattering_maps": True,
+            "generate_poincare_maps": True,
+            "generate_oberth_maps": False,
+            "heatmap_grid_resolution": 60,
+            "heatmap_approach_angles_deg": [0.0, 45.0, 85.0],
+            "top_n_overlay": 5,
         }
     })
     
@@ -178,22 +227,106 @@ class VisualizationConfig(BaseModel):
     animate_phase_space: bool = Field(default=True, description="Animate phase-space evolution")
     animate_comparison: bool = Field(default=False, description="Animate multi-trajectory comparisons")
     
-    figure_dpi: int = Field(default=100, ge=50, le=300, description="Figure resolution (DPI)")
+    figure_dpi: int = Field(default=150, ge=50, le=600, description="Figure resolution (DPI)")
     figure_format: Literal["png", "pdf", "jpg"] = Field(default="png", description="Diagnostic plot format")
+
+    # 2-body diagnostic plot toggles
+    generate_2body_heatmaps: bool = Field(
+        default=True,
+        description="Generate Cartesian (x,y) ΔV/deflection heatmaps for 2-body encounters"
+    )
+    generate_scattering_maps: bool = Field(
+        default=True,
+        description="Generate polar (b, θ_b) scattering maps with trajectory overlays"
+    )
+    generate_poincare_maps: bool = Field(
+        default=True,
+        description="Generate Poincaré-style (b vs α_inf) parameter-space contourf maps"
+    )
+    generate_oberth_maps: bool = Field(
+        default=False,
+        description="Generate Oberth burn comparison maps (no-burn vs burn gain)"
+    )
+    generate_trajectory_heatmap: bool = Field(
+        default=False,
+        description="Generate spatial energy density / flux heatmap (slow: 150×200 grid binned to 500×500)"
+    )
+
+    # 2-body grid parameters
+    heatmap_grid_resolution: int = Field(
+        default=60, ge=10, le=200,
+        description="Grid resolution per axis for 2-body heatmaps (N×N)"
+    )
+    heatmap_approach_angles_deg: list[float] = Field(
+        default=[0.0, 45.0, 85.0],
+        description="Approach angles (degrees) for multi-scenario 2-body diagnostics"
+    )
+
+    # Multi-candidate overlay
+    top_n_overlay: int = Field(
+        default=5, ge=1, le=20,
+        description="Number of top candidates to overlay on multi-trajectory plot"
+    )
+
+
+class TwoBodyConfig(BaseModel):
+    """Two-body encounter scan configuration (consumed by trajectory_tracks.py)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    scattering_body: Literal["star", "planet", "both"] = Field(
+        default="both",
+        description="Which body to scatter off: 'star', 'planet', or 'both'",
+    )
+
+    # Baseline mode
+    baseline_mode: Literal["fixed", "narrowed"] = Field(
+        default="narrowed",
+        description="'fixed' uses config v_approach; 'narrowed' derives envelope from 3-body top candidates",
+    )
+    padding_factor: float = Field(
+        default=1.5, ge=1.0, le=5.0,
+        description="Multiplicative padding on narrowed envelope edges",
+    )
+    num_v: int = Field(default=20, ge=1, description="Velocity grid points for narrowed sweep")
+    num_b_narrow: int = Field(default=100, ge=1, description="Impact-param grid for narrowed sweep")
+    num_angles_narrow: int = Field(default=100, ge=1, description="Angle grid for narrowed sweep")
+
+    # Approach geometry  [km-kg-s]
+    v_approach_kms: float = Field(default=50.0, ge=0.1, description="Approach velocity [km/s]")
+    vstar0_kms: float = Field(default=10.0, ge=0.0, description="Star velocity [km/s]")
+    r_start_km: float = Field(default=1.0e11, ge=1.0, description="Initial separation [km]")
+
+    # Impact-parameter scan  [km]
+    b_min_km: float = Field(default=1.0e7, ge=1.0, description="Min impact parameter [km]")
+    b_max_km: float = Field(default=4.0e9, ge=1.0, description="Max impact parameter [km]")
+    num_b: int = Field(default=150, ge=1, description="Number of impact-parameter samples")
+    log_spacing: bool = Field(default=True, description="Use log spacing for b")
+
+    # Angle scan
+    angle_min_deg: float = Field(default=270.0, description="Min approach angle [deg]")
+    angle_max_deg: float = Field(default=360.0, description="Max approach angle [deg]")
+    num_angles: int = Field(default=200, ge=1, description="Number of angle samples")
+
+    # Integration
+    num_points: int = Field(default=400, ge=10, description="Points per trajectory")
+    output_dir: str = Field(default="results/two_body", description="Output directory")
 
 
 class FullConfig(BaseModel):
     """Complete configuration for slingshot solver pipeline."""
-    
-    model_config = ConfigDict(json_schema_extra={
-        "description": "Complete configuration for slingshot-solver"
-    })
-    
+
+    model_config = ConfigDict(
+        extra="ignore",
+        json_schema_extra={"description": "Complete configuration for slingshot-solver"},
+    )
+
     system: SystemConfig = Field(default_factory=SystemConfig)
     sampling: SamplingConfig = Field(default_factory=SamplingConfig)
     numerical: NumericalConfig = Field(default_factory=NumericalConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
     visualization: VisualizationConfig = Field(default_factory=VisualizationConfig)
+    two_body: Optional[TwoBodyConfig] = Field(default=None, description="2-body scan config")
 
 
 def load_config(config_path: str) -> FullConfig:

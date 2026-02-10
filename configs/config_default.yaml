@@ -6,6 +6,7 @@ system:
   M_star_Msun: 1.19
   M_planet_Mjup: 5.2
   R_planet_Rjup: 1.155
+  R_star_Rsun: 4.06          # Star radius [R☉]
   a_planet_AU: 0.0896
 
 sampling:
@@ -31,8 +32,12 @@ sampling:
 numerical:
   rtol: 1.0e-10
   atol: 1.0e-10
-  r_far_factor: 20.0
+  ode_method: DOP853             # DOP853 | RK45 | Radau | BDF | LSODA
+  r_far_factor: 50.0
   min_clearance_factor: 1.05
+  flyby_r_min_max_hill: 10.0    # Max r_min in Hill-sphere radii (rejects incomplete flybys; null to disable)
+  escape_radius_factor: 3.0     # Multiplier on r0_bary for escape termination (higher = fuller swing)
+  softening_km: 1000.0          # Plummer softening length (km); caps force gradient at close approach (0 = Newtonian)
 
 pipeline:
   N_particles: 3000
@@ -56,3 +61,23 @@ visualization:
   
   figure_dpi: 100
   figure_format: png
+
+two_body:
+  scattering_body: both
+  baseline_mode: narrowed     # "fixed" (config v_approach) or "narrowed" (from 3-body envelope)
+  padding_factor: 1.5         # envelope padding multiplier
+  num_v: 20                   # velocity grid points (narrowed mode)
+  num_b_narrow: 100           # impact-param grid (narrowed mode)
+  num_angles_narrow: 100      # angle grid (narrowed mode)
+  v_approach_kms: 50.0        # fixed-mode approach velocity [km/s]
+  vstar0_kms: 10.0            # star velocity [km/s]
+  r_start_km: 1.0e11          # initial separation [km]
+  b_min_km: 1.0e7
+  b_max_km: 4.0e9
+  num_b: 150
+  log_spacing: true
+  angle_min_deg: 270.0
+  angle_max_deg: 360.0
+  num_angles: 200
+  num_points: 400
+  output_dir: results/two_body

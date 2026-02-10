@@ -7,13 +7,7 @@ import numpy as np
 from scipy.integrate import solve_ivp
 from typing import Optional, Tuple
 
-
-# Physical constants
-G = 6.67430e-20  # km^3 / (kg s^2)
-M_SUN = 1.98847e30  # kg
-M_JUP = 1.898e27  # kg
-R_JUP = 71492.0  # km
-AU_KM = 1.495978707e8  # km
+from .constants import G_KM as G, M_SUN, M_JUP, R_JUP, AU_KM
 
 
 def init_hot_jupiter_barycentric(
@@ -89,6 +83,7 @@ def restricted_3body_ode(
     Y: np.ndarray,
     m_star: float,
     m_p: float,
+    eps2: float = 0.0,
 ) -> np.ndarray:
     """
     Restricted planar 3-body ODE in barycentric frame.
@@ -108,6 +103,11 @@ def restricted_3body_ode(
         Star mass (kg)
     m_p : float
         Planet mass (kg)
+    eps2 : float
+        Plummer softening length squared (km²).
+        Replaces r³ with (r² + ε²)^{3/2} for satellite-body forces only.
+        The star-planet mutual force is never softened.
+        Set to 0 for pure Newtonian gravity.
     
     Returns
     -------
@@ -116,7 +116,7 @@ def restricted_3body_ode(
     """
     xs, ys, vxs, vys, xp, yp, vxp, vyp, x3, y3, vx3, vy3 = Y
     
-    # Star-planet separation
+    # Star-planet separation  (NOT softened — stable circular orbit)
     dx_sp = xp - xs
     dy_sp = yp - ys
     r_sp2 = dx_sp * dx_sp + dy_sp * dy_sp
@@ -127,15 +127,13 @@ def restricted_3body_ode(
     dx_3s = xs - x3
     dy_3s = ys - y3
     r_3s2 = dx_3s * dx_3s + dy_3s * dy_3s
-    r_3s = np.sqrt(r_3s2)
-    r_3s3 = r_3s2 * r_3s if r_3s > 0 else np.inf
+    r_3s3 = (r_3s2 + eps2) ** 1.5       # Plummer-softened denominator
     
     # Satellite-planet separation (vector from sat -> planet)
     dx_3p = xp - x3
     dy_3p = yp - y3
     r_3p2 = dx_3p * dx_3p + dy_3p * dy_3p
-    r_3p = np.sqrt(r_3p2)
-    r_3p3 = r_3p2 * r_3p if r_3p > 0 else np.inf
+    r_3p3 = (r_3p2 + eps2) ** 1.5       # Plummer-softened denominator
     
     # Accelerations of star and planet (due to each other)
     ax_s = G * m_p * dx_sp / r_sp3
@@ -162,6 +160,9 @@ def simulate_3body(
     n_eval: Optional[int] = None,
     rtol: float = 1e-10,
     atol: float = 1e-10,
+    escape_radius_km: Optional[float] = None,
+    method: str = 'DOP853',
+    softening_km: float = 0.0,
 ) -> Optional[object]:
     """
     Integrate restricted 3-body system.
@@ -182,6 +183,21 @@ def simulate_3body(
         Relative tolerance for ODE solver
     atol : float
         Absolute tolerance for ODE solver
+    escape_radius_km : float, optional
+        If set, integration terminates when the satellite recedes past this
+        radius from the barycenter AND is moving outward (after periapsis).
+        This avoids wasting time on particles that have already completed
+        their flyby.  If None, no early termination.
+    method : str
+        ODE solver method for scipy.integrate.solve_ivp.
+        'DOP853' (default) is order-8 explicit, best for orbital mechanics.
+        'Radau' is implicit, handles stiff close encounters better.
+        'RK45' is the scipy default but degrades badly during close passes.
+    softening_km : float
+        Plummer softening length (km) for satellite–body forces.
+        Replaces r³ with (r² + ε²)^{3/2}, capping force gradients at close
+        approach and preventing adaptive-step collapse.  Not applied to the
+        star–planet mutual force.  Set to 0 for pure Newtonian gravity.
     
     Returns
     -------
@@ -193,22 +209,40 @@ def simulate_3body(
     if m_p is None:
         m_p = M_JUP
     
-    if n_eval is not None:
+    # Softening: convert length to squared (ODE expects eps²)
+    eps2 = softening_km * softening_km
+    
+    if n_eval is not None and n_eval > 0:
         t_eval = np.linspace(t_span[0], t_span[1], n_eval)
     else:
-        t_eval = None
+        t_eval = None   # adaptive solver steps — dense near close encounters
+    
+    # Build terminal event list
+    events = None
+    if escape_radius_km is not None:
+        r_esc = float(escape_radius_km)
+
+        def _escape_event(t, Y, m_star, m_p, eps2):
+            """Fires when satellite distance from barycenter crosses r_esc outward."""
+            x3, y3 = Y[8], Y[9]
+            return np.sqrt(x3 * x3 + y3 * y3) - r_esc
+
+        _escape_event.terminal = True
+        _escape_event.direction = +1.0   # only outward crossing
+        events = [_escape_event]
     
     try:
         sol = solve_ivp(
             restricted_3body_ode,
             t_span,
             Y0,
-            args=(m_star, m_p),
+            args=(m_star, m_p, eps2),
             rtol=rtol,
             atol=atol,
             dense_output=False,
             t_eval=t_eval,
-            method='RK45',
+            events=events,
+            method=method,
         )
     except Exception as e:
         print(f"Integration failed: {e}")

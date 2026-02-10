@@ -6,9 +6,7 @@ Supports barycentric parametric (hyperbolic) and planet-relative sampling modes.
 import numpy as np
 from typing import Optional, Tuple
 
-
-AU_KM = 1.495978707e8  # km
-R_JUP = 71492.0  # km
+from .constants import AU_KM, R_JUP
 
 
 def sample_satellite_state_barycentric(
@@ -77,8 +75,9 @@ def sample_satellite_state_barycentric(
         azimuth = rng.uniform(0.0, 2.0 * np.pi)
         
         # Asymptotic position and velocity in hyperbolic encounter frame
-        # Large radius r_init ensures true asymptotic regime
-        r_init = 10.0 * impact_param
+        # r_init must be >> a_planet (~0.09 AU) but need not be 10× b.
+        # 2× impact_param is sufficient and keeps integration times manageable.
+        r_init = 2.0 * impact_param
         
         # Local coordinates: x = radial inward, y = impact parameter direction
         x_local = -r_init  # approaching from negative side

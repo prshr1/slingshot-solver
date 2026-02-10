@@ -8,11 +8,7 @@ import numpy as np
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
 
-
-G = 6.67430e-20  # km^3 / (kg s^2)
-M_SUN = 1.98847e30  # kg
-M_JUP = 1.898e27  # kg
-R_JUP = 71492.0  # km
+from .constants import G_KM as G, M_SUN, M_JUP, R_JUP
 
 
 @dataclass
@@ -43,8 +39,13 @@ class EncounterGeometry:
     r_out_bary: Optional[np.ndarray] = None  # Position barycentric, outgoing (km)
     v_out_bary: Optional[np.ndarray] = None  # Velocity barycentric, outgoing (km/s)
     
+    # Star barycentric velocity at encounter entry (for vstar0 matching)
+    star_v_bary_in: Optional[np.ndarray] = None   # Star velocity at i0 (km/s)
+    planet_v_bary_in: Optional[np.ndarray] = None  # Planet velocity at i0 (km/s)
+    
     # Distances and times
     r_min: Optional[float] = None  # Minimum distance to planet (km)
+    r_star_min: Optional[float] = None  # Minimum distance to star (km)
     t_in: Optional[float] = None  # Time at incoming state (s)
     t_out: Optional[float] = None  # Time at outgoing state (s)
 
@@ -164,6 +165,16 @@ def extract_encounter_states(
     r_out_bary = np.array([xsat[i1], ysat[i1]])
     v_out_bary = np.array([vxsat[i1], vysat[i1]])
     
+    # Star and planet barycentric velocities at encounter entry
+    xs, ys = y[0], y[1]
+    vxs, vys = y[2], y[3]
+    star_v_bary_in = np.array([vxs[i0], vys[i0]])
+    planet_v_bary_in = np.array([vxp[i0], vyp[i0]])
+    
+    # Star-satellite distance (diagnostic: detects star-dominated encounters)
+    r_star = np.hypot(xsat - xs, ysat - ys)
+    r_star_min = float(r_star.min())
+    
     return EncounterGeometry(
         ok=True,
         reason=None,
@@ -181,8 +192,11 @@ def extract_encounter_states(
         r_out_bary=r_out_bary,
         v_out_bary=v_out_bary,
         r_min=r_min,
+        r_star_min=r_star_min,
         t_in=float(t[i0]),
         t_out=float(t[i1]),
+        star_v_bary_in=star_v_bary_in,
+        planet_v_bary_in=planet_v_bary_in,
     )
 
 
@@ -266,12 +280,18 @@ def analyze_trajectory(
         eps_f = 0.5 * v_f**2 - mu_p / r_f
         unbound_f = eps_f > 0.0
         
+        # Vector ΔV: magnitude of velocity vector difference
+        delta_v_vec = np.linalg.norm(enc.v_rel_f - enc.v_rel_i)
+        energy_half_dv_vec_sq = 0.5 * delta_v_vec ** 2
+        
         return {
             "frame": "planet",
             "v_i": v_i,
             "v_f": v_f,
             "delta_v": v_f - v_i,
             "delta_v_pct": 100.0 * (v_f - v_i) / v_i,
+            "delta_v_vec": delta_v_vec,
+            "energy_half_dv_vec_sq": energy_half_dv_vec_sq,
             "deflection": deflection,
             "deflection_frac": deflection / 180.0,
             "r_min": enc.r_min,
@@ -332,12 +352,45 @@ def analyze_trajectory(
         unbound_f = eps_f > 0.0
         unbound_i = eps_i > 0.0
         
+        # Vector ΔV: magnitude of velocity vector difference
+        delta_v_vec = np.linalg.norm(enc.v_out_bary - enc.v_in_bary)
+        energy_half_dv_vec_sq = 0.5 * delta_v_vec ** 2
+        
+        # --- Planet-frame diagnostics (energy extraction analysis) ---
+        # These reveal whether ΔV comes from the planet's orbital KE
+        # (slingshot mechanism) vs deep stellar potential (star-dominated).
+        v_rel_planet_in = np.linalg.norm(enc.v_rel_i) if enc.v_rel_i is not None else np.nan
+        v_rel_planet_out = np.linalg.norm(enc.v_rel_f) if enc.v_rel_f is not None else np.nan
+        # Scalar speed change in planet frame — should be ~0 for pure 2-body
+        # planet flyby (v∞ conserved). Nonzero reveals 3-body (star) effects.
+        delta_v_planet_frame = v_rel_planet_out - v_rel_planet_in
+        
+        # Deflection angle in planet frame
+        planet_deflection_deg = np.nan
+        if enc.v_rel_i is not None and enc.v_rel_f is not None:
+            theta_p_i = np.degrees(np.arctan2(enc.v_rel_i[1], enc.v_rel_i[0]))
+            theta_p_f = np.degrees(np.arctan2(enc.v_rel_f[1], enc.v_rel_f[0]))
+            planet_deflection_deg = wrap_angle_deg(theta_p_f - theta_p_i)
+        
+        # Monopole baseline: energy the particle would have from a point mass
+        # M_total at the barycenter.  Δε_monopole ≈ 0 (no moving body → no
+        # energy transfer).  The difference ε_3body − ε_monopole isolates the
+        # energy extracted from the binary's orbital KE.
+        mu_tot = G * M_tot
+        eps_monopole_i = 0.5 * v_i**2 - mu_tot / r_i if r_i > 0 else np.nan
+        eps_monopole_f = 0.5 * v_f**2 - mu_tot / r_f if r_f > 0 else np.nan
+        delta_eps_monopole = eps_monopole_f - eps_monopole_i if not (np.isnan(eps_monopole_i) or np.isnan(eps_monopole_f)) else np.nan
+        delta_eps_3body = eps_f - eps_i
+        energy_from_planet_orbit = delta_eps_3body - delta_eps_monopole if not np.isnan(delta_eps_monopole) else np.nan
+        
         return {
             "frame": "barycentric",
             "v_i": v_i,
             "v_f": v_f,
             "delta_v": v_f - v_i,
             "delta_v_pct": 100.0 * (v_f - v_i) / v_i,
+            "delta_v_vec": delta_v_vec,
+            "energy_half_dv_vec_sq": energy_half_dv_vec_sq,
             "deflection": deflection,
             "deflection_frac": deflection / 180.0,
             "r_min": enc.r_min,
@@ -347,6 +400,13 @@ def analyze_trajectory(
             "unbound_i": unbound_i,
             "unbound_f": unbound_f,
             "encounter": enc,
+            # Planet-frame diagnostics
+            "v_rel_planet_in": v_rel_planet_in,
+            "v_rel_planet_out": v_rel_planet_out,
+            "delta_v_planet_frame": delta_v_planet_frame,
+            "planet_deflection_deg": planet_deflection_deg,
+            "energy_from_planet_orbit": energy_from_planet_orbit,
+            "delta_eps_monopole": delta_eps_monopole,
         }
     
     else:

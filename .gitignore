@@ -1,0 +1,31 @@
+# Results and output data
+results/
+Archive/
+
+# Generated images
+*.png
+*.jpg
+*.gif
+*.mp4
+
+# Animation frames
+frames/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Pickle files
+*.pkl
+
+# IDE / editor
+.vscode/
+.idea/
+
+# OS files
+Thumbs.db
+.DS_Store
