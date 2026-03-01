@@ -16,9 +16,14 @@ frames/
 __pycache__/
 *.pyc
 *.pyo
+.pytest_cache/
 
-# Jupyter checkpoints
+# Jupyter — notebooks live on research branch only
+*.ipynb
 .ipynb_checkpoints/
+
+# Standalone scripts kept on research branch only
+TwoBodyScatter.py
 
 # Pickle files
 *.pkl
@@ -30,3 +35,8 @@ __pycache__/
 # OS files
 Thumbs.db
 .DS_Store
+
+# Build / dist
+*.egg-info/
+dist/
+build/
