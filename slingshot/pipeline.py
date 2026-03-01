@@ -13,27 +13,36 @@ import pickle
 import dataclasses
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Dict, Any, List, Literal
+from typing import Optional, Dict, Any, List, Literal, Tuple
 
 import matplotlib
 matplotlib.use("Agg")  # Non-interactive backend for headless runs
 import matplotlib.pyplot as plt
 
 from .config import load_config, save_config, FullConfig
+from .console import configure_console_streams, safe_print as print
 from .constants import G_KM, M_SUN, M_JUP, R_JUP, R_SUN, AU_KM
 from .dynamics import simulate_3body, init_hot_jupiter_barycentric
 from .analysis import analyze_trajectory, extract_encounter_states
-from .monte_carlo import run_monte_carlo, select_top_indices
+from .monte_carlo import (
+    run_monte_carlo,
+    select_top_indices,
+    select_pareto_indices,
+    select_weighted_indices,
+)
 from .plotting import (
-    plot_mc_summary,
+    plot_mc_summary_individual,
+    plot_sampling_parameter_distributions,
     plot_best_candidate_with_bodies,
-    plot_velocity_phase_space,
-    plot_star_proximity_distribution,
-    plot_planet_frame_diagnostics,
+    plot_velocity_phase_space_individual,
+    plot_star_proximity_distribution_individual,
+    plot_planet_frame_diagnostics_individual,
     plot_multi_candidate_overlay,
     plot_rejection_breakdown,
-    plot_parameter_correlations,
+    plot_parameter_correlations_individual,
     plot_energy_cdf,
+    plot_publication_objectives_individual,
+    plot_candidate_ranking_diagnostics_individual,
 )
 from .baselines import compare_3body_with_baselines
 from .narrowed_baselines import compute_narrowed_baselines
@@ -63,6 +72,39 @@ def _derive_physics(cfg: FullConfig):
     R_p = cfg.system.R_planet_Rjup * R_JUP
     R_star = cfg.system.R_star_Rsun * R_SUN
     return m_star, m_p, R_p, R_star
+
+
+def _resolve_two_body_star_velocity(
+    cfg: FullConfig,
+    mc: Optional[Dict[str, Any]] = None,
+    verbose: bool = True,
+) -> Tuple[float, float]:
+    """Resolve 2-body baseline star velocity vector from 3-body state.
+
+    For consistency across comparisons, pipeline-generated 2-body diagnostics
+    use the same initial star barycentric velocity as the 3-body run whenever MC
+    state is available.
+    """
+    tb_cfg = cfg.two_body
+    v_cfg = (0.0, tb_cfg.vstar0_kms if tb_cfg else 10.0)
+
+    if mc is None or "Y_sp0" not in mc:
+        return v_cfg
+
+    Y_sp0 = mc["Y_sp0"]
+    v_star_init = (float(Y_sp0[2]), float(Y_sp0[3]))
+
+    if verbose:
+        dvx = v_star_init[0] - v_cfg[0]
+        dvy = v_star_init[1] - v_cfg[1]
+        if np.hypot(dvx, dvy) > 1e-9:
+            print(
+                "  2-body vstar sync: "
+                f"config=({v_cfg[0]:.3f}, {v_cfg[1]:.3f}) -> "
+                f"3-body init=({v_star_init[0]:.3f}, {v_star_init[1]:.3f}) km/s"
+            )
+
+    return v_star_init
 
 
 # ===================================================================
@@ -100,6 +142,9 @@ def phase_monte_carlo(cfg: FullConfig, verbose: bool = True) -> Dict[str, Any]:
         angle_in_min_deg=cfg.sampling.angle_in_min_deg,
         angle_in_max_deg=cfg.sampling.angle_in_max_deg,
         r_init_AU=cfg.sampling.r_init_AU,
+        # Optional system bulk velocity (Galilean boost)
+        bulk_velocity_vx_kms=cfg.system.bulk_velocity_vx_kms,
+        bulk_velocity_vy_kms=cfg.system.bulk_velocity_vy_kms,
         # Numerical
         rtol=cfg.numerical.rtol,
         atol=cfg.numerical.atol,
@@ -128,14 +173,55 @@ def phase_select(cfg: FullConfig, mc: Dict[str, Any],
     """
     if verbose:
         print(f"\n═══ Phase 2: Select top {cfg.pipeline.top_frac*100:.0f}% ═══")
+    mode = cfg.pipeline.select_mode
 
-    top_idx = select_top_indices(
-        mc,
-        top_frac=cfg.pipeline.top_frac,
-        min_top=cfg.pipeline.min_top,
-        metric="delta_v",
-        sign=cfg.pipeline.select_sign,
-    )
+    if mode == "single":
+        top_idx = select_top_indices(
+            mc,
+            top_frac=cfg.pipeline.top_frac,
+            min_top=cfg.pipeline.min_top,
+            metric=cfg.pipeline.select_metric,
+            sign=cfg.pipeline.select_sign,
+        )
+        if verbose:
+            print(
+                "  Selection mode: single  "
+                f"(metric={cfg.pipeline.select_metric}, sign={cfg.pipeline.select_sign})"
+            )
+    else:
+        objectives = [
+            {"metric": o.metric, "sign": o.sign, "weight": o.weight}
+            for o in cfg.pipeline.selection_objectives
+        ]
+
+        if mode == "pareto":
+            top_idx = select_pareto_indices(
+                mc,
+                objectives=objectives,
+                top_frac=cfg.pipeline.top_frac,
+                min_top=cfg.pipeline.min_top,
+                tie_break_normalization=cfg.pipeline.weighted_normalization,
+            )
+        elif mode == "weighted":
+            top_idx = select_weighted_indices(
+                mc,
+                objectives=objectives,
+                top_frac=cfg.pipeline.top_frac,
+                min_top=cfg.pipeline.min_top,
+                normalization=cfg.pipeline.weighted_normalization,
+            )
+        else:
+            raise ValueError(f"Unknown select_mode: {mode}")
+
+        if verbose:
+            obj_txt = ", ".join(
+                f"{o['metric']}:{o['sign']}@{o['weight']:.2g}" for o in objectives
+            )
+            print(
+                f"  Selection mode: {mode}  "
+                f"(norm={cfg.pipeline.weighted_normalization}; objectives={obj_txt})"
+            )
+
     if verbose:
         print(f"  Selected {len(top_idx)} candidates")
     return top_idx
@@ -313,6 +399,7 @@ def phase_baselines(
         num_v=num_v,
         num_b=num_b,
         num_angles=num_ang,
+        verbose=verbose,
     )
 
     # Extract 2-body metrics
@@ -363,31 +450,52 @@ def phase_plots(
         print(f"\n═══ Phase 6: Plots → {output_dir} ═══")
 
     m_star, m_p, R_p, R_star = _derive_physics(cfg)
-    dpi = cfg.visualization.figure_dpi
+    viz = cfg.visualization
+    dpi = max(150, int(viz.figure_dpi))
+    landscape_size = (14.0, 8.0)
     saved: List[str] = []
 
     def _save(fig, name):
         p = output_dir / name
-        fig.savefig(p, dpi=dpi, bbox_inches="tight")
-        plt.close(fig)
+        fig.set_size_inches(*landscape_size, forward=True)
+        fig.savefig(p, dpi=dpi)
         saved.append(str(p))
+        plt.close(fig)
         if verbose:
             print(f"  ✓ {name}")
 
-    # MC summary
-    _save(plot_mc_summary(mc), "mc_summary.png")
+    def _save_fig_dict(figs: Dict[str, plt.Figure]):
+        for fname, fig in figs.items():
+            _save(fig, fname)
+
+    def _capture_new_pngs(before: set[str]):
+        after = {p.name for p in output_dir.glob("*.png")}
+        new_names = sorted(after - before)
+        for n in new_names:
+            saved.append(str(output_dir / n))
+        return new_names
+
+    # MC summary (standalone panels)
+    _save_fig_dict(plot_mc_summary_individual(mc, figsize=landscape_size))
+
+    # Sampling-parameter diagnostics (config proposal-space coverage + cutoffs)
+    param_figs = plot_sampling_parameter_distributions(mc, cfg=cfg, save_dir=None, dpi=dpi)
+    for fname, fig in param_figs.items():
+        _save(fig, fname)
+    if verbose and not param_figs:
+        print("  ! sampling parameter distributions unavailable")
 
     # Rejection breakdown
     _save(plot_rejection_breakdown(mc, save_dir=None, dpi=dpi), "rejection_breakdown.png")
 
-    # Parameter correlations
-    _save(plot_parameter_correlations(mc, save_dir=None, dpi=dpi), "parameter_correlations.png")
+    # Parameter correlations (standalone panels)
+    _save_fig_dict(plot_parameter_correlations_individual(mc, figsize=landscape_size))
 
-    # Star proximity
+    # Star proximity (standalone panels)
     star_clearance = cfg.numerical.star_min_clearance_Rstar
-    _save(plot_star_proximity_distribution(
-        mc, R_star, clearance_Rstar=star_clearance, save_dir=None, dpi=dpi,
-    ), "star_proximity_distribution.png")
+    _save_fig_dict(plot_star_proximity_distribution_individual(
+        mc, R_star, clearance_Rstar=star_clearance, figsize=landscape_size,
+    ))
 
     # Energy CDF — enriched with narrowed baselines + re-run overlay
     cdf_kwargs: Dict[str, Any] = {}
@@ -414,15 +522,38 @@ def phase_plots(
         _save(plot_best_candidate_with_bodies(
             best_sol, best_ana, m_star=m_star, m_p=m_p, R_p=R_p,
         ), "best_candidate.png")
-        _save(plot_velocity_phase_space(best_sol, title_prefix="Best"), "velocity_phase_space.png")
+        _save_fig_dict(plot_velocity_phase_space_individual(
+            best_sol, title_prefix="Best", figsize=landscape_size,
+        ))
 
     # Planet-frame diagnostics
     analyses = rerun["analyses_best"]
     valid_ana = [a for a in analyses if a is not None]
     if valid_ana:
-        _save(plot_planet_frame_diagnostics(
-            valid_ana, R_p, R_star, save_dir=None, dpi=dpi,
-        ), "planet_frame_diagnostics.png")
+        _save_fig_dict(plot_planet_frame_diagnostics_individual(
+            valid_ana, R_p, R_star, figsize=landscape_size,
+        ))
+
+    # Publication objectives dashboard
+    if viz.generate_publication_dashboard:
+        _save_fig_dict(plot_publication_objectives_individual(
+            mc=mc,
+            analyses_best=valid_ana if valid_ana else None,
+            comparison=baselines.get("comparison") if baselines else None,
+            R_star_km=R_star,
+            clearance_Rstar=cfg.numerical.star_min_clearance_Rstar,
+            figsize=landscape_size,
+        ))
+
+    # Candidate ranking diagnostics
+    if viz.generate_candidate_ranking_plot:
+        _save_fig_dict(plot_candidate_ranking_diagnostics_individual(
+            analyses=analyses,
+            top_indices=top_idx,
+            R_p_km=R_p,
+            R_star_km=R_star,
+            figsize=landscape_size,
+        ))
 
     # Multi-candidate overlay
     sols = rerun["sols_best"]
@@ -462,17 +593,25 @@ def phase_plots(
             plot_encounter_2d_trajectories,
             plot_oberth_comparison,
         )
-        viz = cfg.visualization
         res = viz.heatmap_grid_resolution
         angles = viz.heatmap_approach_angles_deg
 
         tb = cfg.two_body
         v_app = tb.v_approach_kms if tb else 50.0
-        vstar0 = tb.vstar0_kms if tb else 10.0
+        narrowed_env = None
+        if baselines and baselines.get("narrowed") is not None:
+            narrowed_env = baselines["narrowed"].get("envelope")
+        if narrowed_env is not None and hasattr(narrowed_env, "vstar_vec"):
+            vstar0 = (float(narrowed_env.vstar_vec[0]), float(narrowed_env.vstar_vec[1]))
+            if verbose:
+                print(f"  2-body vstar sync: using narrowed-envelope value ({vstar0[0]:.3f}, {vstar0[1]:.3f}) km/s")
+        else:
+            vstar0 = _resolve_two_body_star_velocity(cfg, mc=mc, verbose=verbose)
         b_min = tb.b_min_km if tb else 1e7
         b_max = tb.b_max_km if tb else 4e9
 
         if viz.generate_poincare_maps:
+            before_png = {p.name for p in output_dir.glob("*.png")}
             figs = plot_poincare_heatmaps(
                 m_star, v_inf_kms=v_app, vstar0_kms=vstar0,
                 num_b=res, num_angle=res,
@@ -482,12 +621,12 @@ def phase_plots(
             )
             for f in figs:
                 plt.close(f)
-            saved.extend([str(output_dir / f"poincare_heatmap_multi_{cfg.system.name.lower()}_star.png"),
-                          str(output_dir / f"poincare_heatmap_combined_{cfg.system.name.lower()}_star.png")])
+            _capture_new_pngs(before_png)
             if verbose:
                 print(f"  ✓ poincare_heatmaps ({len(figs)} figs)")
 
         if viz.generate_scattering_maps:
+            before_png = {p.name for p in output_dir.glob("*.png")}
             figs = plot_scattering_maps(
                 m_star, v_approach_kms=v_app, vstar0_kms=vstar0,
                 approach_angles_deg=angles, num_b=res, num_theta=res,
@@ -497,10 +636,12 @@ def phase_plots(
             )
             for f in figs:
                 plt.close(f)
+            _capture_new_pngs(before_png)
             if verbose:
                 print(f"  ✓ scattering_maps ({len(figs)} figs)")
 
         if viz.generate_2body_heatmaps:
+            before_png = {p.name for p in output_dir.glob("*.png")}
             figs = plot_encounter_2d_cartesian(
                 m_star, v_approach_kms=v_app, vstar0_kms=vstar0,
                 approach_angles_deg=angles, num_xy=res,
@@ -509,10 +650,12 @@ def phase_plots(
             )
             for f in figs:
                 plt.close(f)
+            _capture_new_pngs(before_png)
             if verbose:
                 print(f"  ✓ encounter_2d_cartesian ({len(figs)} figs)")
 
         if viz.generate_oberth_maps:
+            before_png = {p.name for p in output_dir.glob("*.png")}
             figs = plot_oberth_comparison(
                 m_star, v_inf_kms=v_app, vstar0_kms=vstar0,
                 num_b=res, num_angle=res,
@@ -522,6 +665,7 @@ def phase_plots(
             )
             for f in figs:
                 plt.close(f)
+            _capture_new_pngs(before_png)
             if verbose:
                 print(f"  ✓ oberth_comparison ({len(figs)} figs)")
 
@@ -534,18 +678,35 @@ def phase_plots(
         from .plotting_twobody import plot_trajectory_tracks
         narrowed = baselines.get("narrowed") if baselines else None
         if narrowed is not None and narrowed.get("envelope") is not None:
+            viz = cfg.visualization
+            norm_mode = getattr(viz, "trajectory_energy_norm_mode", "auto")
+            fixed_range = None
+            if norm_mode == "fixed":
+                vmin = getattr(viz, "trajectory_energy_vmin", None)
+                vmax = getattr(viz, "trajectory_energy_vmax", None)
+                if vmin is not None and vmax is not None and vmax > vmin:
+                    fixed_range = (float(vmin), float(vmax))
+            before_png = {p.name for p in output_dir.glob("*.png")}
             figs_tt = plot_trajectory_tracks(
                 narrowed=narrowed,
                 sols_best=rerun.get("sols_best", []),
                 analyses_best=rerun.get("analyses_best", []),
                 cfg=cfg,
+                overlay_lines=getattr(viz, "trajectory_overlay_lines", True),
+                overlay_line_count=getattr(viz, "trajectory_overlay_line_count", 90),
+                gradient_mode=getattr(viz, "trajectory_gradient_mode", "hexbin"),
+                confidence_min_count=getattr(viz, "trajectory_confidence_min_count", 2),
+                fixed_energy_range=fixed_range,
+                hexbin_gridsize=getattr(viz, "trajectory_hexbin_gridsize", 150),
+                kde_sigma_bins=getattr(viz, "trajectory_kde_sigma_bins", 2.0),
+                time_frames=getattr(viz, "trajectory_time_frames", 48),
+                export_time_data=getattr(viz, "trajectory_time_export_npz", True),
                 save_dir=str(output_dir),
                 dpi=dpi,
             )
             for fig_tt in figs_tt:
                 plt.close(fig_tt)
-            saved.append(str(output_dir / "trajectory_tracks_star.png"))
-            saved.append(str(output_dir / "trajectory_tracks_planet.png"))
+            _capture_new_pngs(before_png)
             if verbose:
                 print(f"  ✓ trajectory_tracks ({len(figs_tt)} figs)")
     except Exception as e:
@@ -694,6 +855,9 @@ def run_pipeline(
     dict
         All intermediate results keyed by phase name.
     """
+    # Ensure nested module prints cannot crash on restrictive console encodings.
+    configure_console_streams()
+
     all_phases = {"mc", "select", "rerun", "best", "baselines",
                   "plots", "animations", "save"}
     if phases is None:
@@ -813,6 +977,7 @@ def run_pipeline(
             comparison=baselines.get("comparison") if baselines else None,
             narrowed=baselines.get("narrowed") if baselines else None,
             saved_plots=results.get("saved_plots"),
+            top_indices=top_idx,
         )
         results["report"] = report
         if verbose:

@@ -36,6 +36,35 @@ if _ROOT not in _sys.path:
 import TwoBodyScatter as _TBS
 
 
+def _star_velocity_components(vstar0: Any) -> Tuple[float, float]:
+    """Resolve star velocity to (vx, vy) with legacy scalar support."""
+    if np.isscalar(vstar0):
+        return 0.0, float(vstar0)
+    if len(vstar0) != 2:
+        raise ValueError(f"Star velocity vector must have 2 components, got {vstar0}")
+    return float(vstar0[0]), float(vstar0[1])
+
+
+def _subplot_grid_max_two(
+    n_panels: int,
+    panel_width: float = 6.2,
+    panel_height: float = 5.6,
+) -> Tuple[plt.Figure, np.ndarray]:
+    """Create a subplot grid with at most 2 columns and hide unused axes."""
+    n_panels = max(1, int(n_panels))
+    ncols = min(2, n_panels)
+    nrows = int(np.ceil(n_panels / ncols))
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(panel_width * ncols, panel_height * nrows),
+    )
+    axes_flat = np.atleast_1d(axes).ravel()
+    for ax in axes_flat[n_panels:]:
+        ax.set_visible(False)
+    return fig, axes_flat
+
+
 # ===================================================================
 # Private helpers — shared grid-scan logic
 # ===================================================================
@@ -49,7 +78,7 @@ def _compute_encounter_grid_poincare(
     alpha_min_rad: float,
     alpha_max_rad: float,
     v_inf: float,
-    vstar0: float,
+    vstar0: Any,
     r_far: float,
 ) -> Dict[str, np.ndarray]:
     """Compute b × α_inf Poincaré encounter grid.
@@ -65,6 +94,8 @@ def _compute_encounter_grid_poincare(
     theta = np.full_like(B, np.nan)
     vinf_out = np.full_like(B, np.nan)
     rp = np.full_like(B, np.nan)
+    vstar_x, vstar_y = _star_velocity_components(vstar0)
+    vstar_vec = (vstar_x, vstar_y)
 
     for i in range(num_b):
         for j in range(num_angle):
@@ -72,10 +103,10 @@ def _compute_encounter_grid_poincare(
             alpha = alpha_arr[j]
             xm0 = r_far * np.cos(alpha)
             ym0 = r_far * np.sin(alpha)
-            um0 = -v_inf * np.cos(alpha)
-            vm0 = -v_inf * np.sin(alpha)
+            um0 = -v_inf * np.cos(alpha) + vstar_x
+            vm0 = -v_inf * np.sin(alpha) + vstar_y
             try:
-                res = _TBS.gravity_assist_no_burn(xm0, ym0, um0, vm0, vstar0, mu)
+                res = _TBS.gravity_assist_no_burn(xm0, ym0, um0, vm0, vstar_vec, mu)
                 deltaV[i, j] = _TBS.deltaV_lab(um0, vm0, res.umF, res.vmF)
                 theta[i, j] = np.degrees(res.theta)
                 vinf_out[i, j] = res.vinf
@@ -101,7 +132,7 @@ def _compute_encounter_grid_cartesian(
     num_y: int,
     xy_range: float,
     v_approach: float,
-    vstar0: float,
+    vstar0: Any,
     approach_angle_deg: float,
     r_encounter: float,
 ) -> Dict[str, np.ndarray]:
@@ -117,18 +148,22 @@ def _compute_encounter_grid_cartesian(
     theta_grid = np.full_like(X, np.nan)
     rp_grid = np.full_like(X, np.nan)
     b_grid = np.full_like(X, np.nan)
+    vstar_x, vstar_y = _star_velocity_components(vstar0)
+    vstar_vec = (vstar_x, vstar_y)
 
     angle_rad = np.radians(approach_angle_deg)
-    ux = -v_approach * np.cos(angle_rad)
-    uy = -v_approach * np.sin(angle_rad)
+    ux_rel = -v_approach * np.cos(angle_rad)
+    uy_rel = -v_approach * np.sin(angle_rad)
 
     for i in range(num_x):
         for j in range(num_y):
             xm0 = r_encounter * np.cos(angle_rad) + x_arr[i]
             ym0 = r_encounter * np.sin(angle_rad) + y_arr[j]
+            um0 = ux_rel + vstar_x
+            vm0 = uy_rel + vstar_y
             try:
-                res = _TBS.gravity_assist_no_burn(xm0, ym0, ux, uy, vstar0, mu)
-                deltaV[i, j] = _TBS.deltaV_lab(ux, uy, res.umF, res.vmF)
+                res = _TBS.gravity_assist_no_burn(xm0, ym0, um0, vm0, vstar_vec, mu)
+                deltaV[i, j] = _TBS.deltaV_lab(um0, vm0, res.umF, res.vmF)
                 theta_grid[i, j] = np.degrees(res.theta)
                 rp_grid[i, j] = res.rp
                 b_grid[i, j] = res.b
@@ -154,7 +189,7 @@ def _compute_encounter_grid_polar(
     b_min: float,
     b_max: float,
     v_approach: float,
-    vstar0: float,
+    vstar0: Any,
     approach_angle_deg: float,
     r_start: float,
 ) -> Dict[str, np.ndarray]:
@@ -169,6 +204,8 @@ def _compute_encounter_grid_polar(
     deltaV = np.full_like(Bmag, np.nan)
     theta_defl = np.full_like(Bmag, np.nan)
     rp = np.full_like(Bmag, np.nan)
+    vstar_x, vstar_y = _star_velocity_components(vstar0)
+    vstar_vec = (vstar_x, vstar_y)
 
     angle_rad = np.radians(approach_angle_deg)
 
@@ -180,10 +217,10 @@ def _compute_encounter_grid_polar(
             offset_y = bval * np.sin(tb)
             xm0 = r_start * np.cos(angle_rad) + offset_x
             ym0 = r_start * np.sin(angle_rad) + offset_y
-            ux = -v_approach * np.cos(angle_rad)
-            uy = -v_approach * np.sin(angle_rad)
+            ux = -v_approach * np.cos(angle_rad) + vstar_x
+            uy = -v_approach * np.sin(angle_rad) + vstar_y
             try:
-                res = _TBS.gravity_assist_no_burn(xm0, ym0, ux, uy, vstar0, mu)
+                res = _TBS.gravity_assist_no_burn(xm0, ym0, ux, uy, vstar_vec, mu)
                 deltaV[i, j] = _TBS.deltaV_lab(ux, uy, res.umF, res.vmF)
                 theta_defl[i, j] = np.degrees(res.theta)
                 rp[i, j] = res.rp
@@ -208,7 +245,7 @@ def _compute_encounter_grid_polar(
 def plot_poincare_heatmaps(
     M_body_kg: float,
     v_inf_kms: float = 50.0,
-    vstar0_kms: float = 10.0,
+    vstar0_kms: Any = 10.0,
     num_b: int = 60,
     num_angle: int = 60,
     b_min_km: float = 1e7,
@@ -218,10 +255,7 @@ def plot_poincare_heatmaps(
     save_dir: Optional[Path] = None,
     dpi: int = 150,
 ) -> List[plt.Figure]:
-    """Generate Poincaré (b vs α_inf) heatmaps for a 2-body encounter.
-
-    Parameters: all in km-kg-s.  Returns list of figures.
-    """
+    """Generate standalone Poincare (b vs alpha_inf) heatmaps."""
     mu = G_KM * M_body_kg
     grid = _compute_encounter_grid_poincare(
         mu=mu, num_b=num_b, num_angle=num_angle,
@@ -229,57 +263,51 @@ def plot_poincare_heatmaps(
         alpha_min_rad=0.2, alpha_max_rad=np.pi - 0.2,
         v_inf=v_inf_kms, vstar0=vstar0_kms, r_far=r_far_km,
     )
-    b_plot = grid["B"] / 1e6  # km → 10⁶ km for axis label
+    b_plot = grid["B"] / 1e6
     a_plot = np.degrees(grid["A"])
 
-    figs = []
+    figs: List[plt.Figure] = []
+    tag = body_label.lower().replace(" ", "_")
 
-    # --- Multi-panel ---
-    fig1, axes = plt.subplots(2, 2, figsize=(16, 12))
-    datasets = [
-        (grid["deltaV"], "ΔV (km/s)", "hot_r"),
-        (grid["theta"], "Deflection θ (°)", "viridis"),
-        (grid["vinf"], "v∞ out (km/s)", "cool"),
-        (grid["rp"], "Periapsis rp (km)", "plasma"),
+    panels = [
+        (grid["deltaV"], "Delta-V (km/s)", "hot_r", f"poincare_heatmap_delta_v_{tag}.png"),
+        (grid["theta"], "Deflection theta (deg)", "viridis", f"poincare_heatmap_deflection_{tag}.png"),
+        (grid["vinf"], "v_inf out (km/s)", "cool", f"poincare_heatmap_vinf_{tag}.png"),
+        (grid["rp"], "Periapsis rp (km)", "plasma", f"poincare_heatmap_periapsis_{tag}.png"),
     ]
-    for ax, (data, label, cmap) in zip(axes.flat, datasets):
-        cf = ax.contourf(a_plot, b_plot, data, levels=30, cmap=cmap)
-        fig1.colorbar(cf, ax=ax, label=label)
-        ax.set_xlabel("Approach angle α (°)")
-        ax.set_ylabel("Impact parameter b (10⁶ km)")
-        ax.set_title(label)
-    fig1.suptitle(f"Poincaré encounter maps — {body_label}", fontsize=14, fontweight="bold")
-    fig1.tight_layout()
-    figs.append(fig1)
 
-    # --- Combined ΔV + θ contours ---
-    fig2, ax = plt.subplots(figsize=(12, 9))
+    for data, label, cmap, fname in panels:
+        fig, ax = plt.subplots(figsize=(14, 8))
+        cf = ax.contourf(a_plot, b_plot, data, levels=30, cmap=cmap)
+        fig.colorbar(cf, ax=ax, label=label)
+        ax.set_xlabel("Approach angle alpha (deg)")
+        ax.set_ylabel("Impact parameter b (10^6 km)")
+        ax.set_title(f"Poincare map - {label} - {body_label}", fontsize=13, fontweight="bold")
+        ax.grid(True, alpha=0.2)
+        fig.tight_layout()
+        figs.append(fig)
+        if save_dir:
+            fig.savefig(Path(save_dir) / fname, dpi=dpi)
+
+    fig2, ax = plt.subplots(figsize=(14, 8))
     cf = ax.contourf(a_plot, b_plot, grid["deltaV"], levels=25, cmap="hot_r")
-    fig2.colorbar(cf, ax=ax, label="ΔV (km/s)")
+    fig2.colorbar(cf, ax=ax, label="Delta-V (km/s)")
     ax.contour(a_plot, b_plot, grid["theta"], levels=10, colors="cyan", linewidths=1.5, alpha=0.6)
-    ax.set_xlabel("Approach angle α (°)", fontsize=12)
-    ax.set_ylabel("Impact parameter b (10⁶ km)", fontsize=12)
-    ax.set_title(f"ΔV with deflection contours — {body_label}", fontsize=14, fontweight="bold")
+    ax.set_xlabel("Approach angle alpha (deg)", fontsize=12)
+    ax.set_ylabel("Impact parameter b (10^6 km)", fontsize=12)
+    ax.set_title(f"Delta-V with deflection contours - {body_label}", fontsize=13, fontweight="bold")
     fig2.tight_layout()
     figs.append(fig2)
-
     if save_dir:
-        save_dir = Path(save_dir)
-        tag = body_label.lower().replace(" ", "_")
-        fig1.savefig(save_dir / f"poincare_heatmap_multi_{tag}.png", dpi=dpi, bbox_inches="tight")
-        fig2.savefig(save_dir / f"poincare_heatmap_combined_{tag}.png", dpi=dpi, bbox_inches="tight")
+        fig2.savefig(Path(save_dir) / f"poincare_heatmap_combined_{tag}.png", dpi=dpi)
 
     return figs
 
 
-# ===================================================================
-# 2. Scattering polar maps (b_mag × θ_b)
-# ===================================================================
-
 def plot_scattering_maps(
     M_body_kg: float,
     v_approach_kms: float = 50.0,
-    vstar0_kms: float = 10.0,
+    vstar0_kms: Any = 10.0,
     approach_angles_deg: List[float] = (0.0, 45.0, 85.0),
     num_b: int = 50,
     num_theta: int = 50,
@@ -290,9 +318,10 @@ def plot_scattering_maps(
     save_dir: Optional[Path] = None,
     dpi: int = 150,
 ) -> List[plt.Figure]:
-    """Generate polar scattering maps for multiple approach angles."""
+    """Generate standalone polar scattering maps for multiple approach angles."""
     mu = G_KM * M_body_kg
-    figs = []
+    figs: List[plt.Figure] = []
+    tag = body_label.lower().replace(" ", "_")
 
     for angle_deg in approach_angles_deg:
         grid = _compute_encounter_grid_polar(
@@ -303,39 +332,33 @@ def plot_scattering_maps(
         )
         b_plot = grid["Bmag"] / 1e6
         t_plot = np.degrees(grid["Theta_b"])
+        suffix = f"{angle_deg:.0f}deg"
 
-        # 3-panel scattering map
-        fig, axes = plt.subplots(1, 3, figsize=(18, 5.5))
-        for ax, (data, label, cmap) in zip(axes, [
-            (grid["deltaV"], "ΔV (km/s)", "hot_r"),
-            (grid["theta_defl"], "θ deflection (°)", "viridis"),
-            (grid["rp"], "Periapsis rp (km)", "plasma"),
-        ]):
+        panels = [
+            (grid["deltaV"], "Delta-V (km/s)", "hot_r", "delta_v"),
+            (grid["theta_defl"], "Deflection theta (deg)", "viridis", "deflection"),
+            (grid["rp"], "Periapsis rp (km)", "plasma", "periapsis"),
+        ]
+        for data, label, cmap, slug in panels:
+            fig, ax = plt.subplots(figsize=(14, 8))
             cf = ax.contourf(t_plot, b_plot, data, levels=30, cmap=cmap)
             fig.colorbar(cf, ax=ax, label=label)
-            ax.set_xlabel("Impact direction θ_b (°)")
-            ax.set_ylabel("Impact parameter b (10⁶ km)")
-            ax.set_title(label)
-        suffix = f"{angle_deg:.0f}deg"
-        fig.suptitle(f"Scattering map — {body_label}, approach {suffix}", fontsize=14, fontweight="bold")
-        fig.tight_layout()
-        figs.append(fig)
-
-        if save_dir:
-            fig.savefig(Path(save_dir) / f"scattering_map_{body_label.lower()}_{suffix}.png",
-                        dpi=dpi, bbox_inches="tight")
+            ax.set_xlabel("Impact direction theta_b (deg)")
+            ax.set_ylabel("Impact parameter b (10^6 km)")
+            ax.set_title(f"Scattering map - {label} - {body_label} - approach {suffix}", fontsize=13, fontweight="bold")
+            ax.grid(True, alpha=0.2)
+            fig.tight_layout()
+            figs.append(fig)
+            if save_dir:
+                fig.savefig(Path(save_dir) / f"scattering_map_{tag}_{suffix}_{slug}.png", dpi=dpi)
 
     return figs
 
 
-# ===================================================================
-# 3. Cartesian encounter heatmaps (x, y)
-# ===================================================================
-
 def plot_encounter_2d_cartesian(
     M_body_kg: float,
     v_approach_kms: float = 50.0,
-    vstar0_kms: float = 10.0,
+    vstar0_kms: Any = 10.0,
     approach_angles_deg: List[float] = (0.0, 45.0, 85.0),
     num_xy: int = 70,
     xy_range_km: float = 3e9,
@@ -344,9 +367,10 @@ def plot_encounter_2d_cartesian(
     save_dir: Optional[Path] = None,
     dpi: int = 150,
 ) -> List[plt.Figure]:
-    """Generate Cartesian (x, y) ΔV / deflection / periapsis heatmaps."""
+    """Generate standalone Cartesian (x, y) encounter heatmaps."""
     mu = G_KM * M_body_kg
-    figs = []
+    figs: List[plt.Figure] = []
+    tag = body_label.lower().replace(" ", "_")
 
     for angle_deg in approach_angles_deg:
         grid = _compute_encounter_grid_cartesian(
@@ -357,42 +381,35 @@ def plot_encounter_2d_cartesian(
         )
         x_plot = grid["X"] / 1e6
         y_plot = grid["Y"] / 1e6
+        suffix = f"{angle_deg:.0f}deg"
 
-        fig, axes = plt.subplots(2, 2, figsize=(16, 14))
-        for ax, (data, label, cmap) in zip(axes.flat, [
-            (grid["deltaV"], "ΔV (km/s)", "hot_r"),
-            (grid["theta"], "Deflection θ (°)", "viridis"),
-            (grid["rp"], "Periapsis rp (km)", "plasma"),
-            (grid["b"], "Impact param b (km)", "cool"),
-        ]):
+        panels = [
+            (grid["deltaV"], "Delta-V (km/s)", "hot_r", "delta_v"),
+            (grid["theta"], "Deflection theta (deg)", "viridis", "deflection"),
+            (grid["rp"], "Periapsis rp (km)", "plasma", "periapsis"),
+            (grid["b"], "Impact parameter b (km)", "cool", "impact_parameter"),
+        ]
+        for data, label, cmap, slug in panels:
+            fig, ax = plt.subplots(figsize=(14, 8))
             cf = ax.contourf(x_plot, y_plot, data, levels=30, cmap=cmap)
             fig.colorbar(cf, ax=ax, label=label)
             ax.add_patch(Circle((0, 0), 0.1, fill=False, ec="cyan", lw=1.5))
             ax.set_aspect("equal")
-            ax.set_xlabel("x offset (10⁶ km)")
-            ax.set_ylabel("y offset (10⁶ km)")
-            ax.set_title(label)
-
-        suffix = f"{angle_deg:.0f}deg"
-        fig.suptitle(f"2D encounter maps — {body_label}, approach {suffix}", fontsize=14, fontweight="bold")
-        fig.tight_layout()
-        figs.append(fig)
-
-        if save_dir:
-            fig.savefig(Path(save_dir) / f"encounter_2d_{body_label.lower()}_{suffix}_maps.png",
-                        dpi=dpi, bbox_inches="tight")
+            ax.set_xlabel("x offset (10^6 km)")
+            ax.set_ylabel("y offset (10^6 km)")
+            ax.set_title(f"2D encounter map - {label} - {body_label} - approach {suffix}", fontsize=13, fontweight="bold")
+            fig.tight_layout()
+            figs.append(fig)
+            if save_dir:
+                fig.savefig(Path(save_dir) / f"encounter_2d_{tag}_{suffix}_{slug}.png", dpi=dpi)
 
     return figs
 
 
-# ===================================================================
-# 4. Cartesian encounter + trajectory overlay
-# ===================================================================
-
 def plot_encounter_2d_trajectories(
     M_body_kg: float,
     v_approach_kms: float = 50.0,
-    vstar0_kms: float = 10.0,
+    vstar0_kms: Any = 10.0,
     approach_angles_deg: List[float] = (0.0, 45.0, 85.0),
     num_xy: int = 60,
     xy_range_km: float = 3e9,
@@ -401,16 +418,12 @@ def plot_encounter_2d_trajectories(
     save_dir: Optional[Path] = None,
     dpi: int = 150,
 ) -> List[plt.Figure]:
-    """Generate ΔV heatmap + hyperbolic trajectory overlay."""
+    """Generate standalone delta-V heatmaps per approach angle."""
     mu = G_KM * M_body_kg
-    figs = []
+    figs: List[plt.Figure] = []
+    tag = body_label.lower().replace(" ", "_")
 
-    # --- Multi-scenario comparison panel ---
-    fig_multi, axes = plt.subplots(1, len(approach_angles_deg),
-                                   figsize=(6.5 * len(approach_angles_deg), 6.5))
-    if len(approach_angles_deg) == 1:
-        axes = [axes]
-    for ax, angle_deg in zip(axes, approach_angles_deg):
+    for angle_deg in approach_angles_deg:
         grid = _compute_encounter_grid_cartesian(
             mu=mu, num_x=num_xy, num_y=num_xy,
             xy_range=xy_range_km, v_approach=v_approach_kms,
@@ -419,33 +432,29 @@ def plot_encounter_2d_trajectories(
         )
         x_plot = grid["X"] / 1e6
         y_plot = grid["Y"] / 1e6
+        suffix = f"{angle_deg:.0f}deg"
+
+        fig, ax = plt.subplots(figsize=(14, 8))
         cf = ax.contourf(x_plot, y_plot, grid["deltaV"], levels=30, cmap="hot_r")
-        fig_multi.colorbar(cf, ax=ax)
+        fig.colorbar(cf, ax=ax, label="Delta-V (km/s)")
         ax.add_patch(Circle((0, 0), 0.15, fill=True, fc="gold", ec="orange", lw=1.5, alpha=0.7))
         ax.set_aspect("equal")
-        ax.set_title(f"Approach {angle_deg:.0f}°")
-        ax.set_xlabel("x (10⁶ km)")
-        ax.set_ylabel("y (10⁶ km)")
+        ax.set_title(f"2D encounter Delta-V - {body_label} - approach {suffix}", fontsize=13, fontweight="bold")
+        ax.set_xlabel("x (10^6 km)")
+        ax.set_ylabel("y (10^6 km)")
+        fig.tight_layout()
+        figs.append(fig)
 
-    fig_multi.suptitle(f"Multi-scenario ΔV — {body_label}", fontsize=14, fontweight="bold")
-    fig_multi.tight_layout()
-    figs.append(fig_multi)
-
-    if save_dir:
-        fig_multi.savefig(Path(save_dir) / f"encounter_2d_{body_label.lower()}_multi.png",
-                          dpi=dpi, bbox_inches="tight")
+        if save_dir:
+            fig.savefig(Path(save_dir) / f"encounter_2d_{tag}_{suffix}_delta_v.png", dpi=dpi)
 
     return figs
 
 
-# ===================================================================
-# 5. Oberth comparison maps
-# ===================================================================
-
 def plot_oberth_comparison(
     M_body_kg: float,
     v_inf_kms: float = 50.0,
-    vstar0_kms: float = 10.0,
+    vstar0_kms: Any = 10.0,
     dv_burn_kms: float = 5.0,
     num_b: int = 50,
     num_angle: int = 50,
@@ -456,7 +465,7 @@ def plot_oberth_comparison(
     save_dir: Optional[Path] = None,
     dpi: int = 150,
 ) -> List[plt.Figure]:
-    """Compare no-burn vs Oberth burn across Poincaré parameter space."""
+    """Compare no-burn vs Oberth burn with standalone figures."""
     mu = G_KM * M_body_kg
     b_arr = np.linspace(b_min_km, b_max_km, num_b)
     alpha_arr = np.linspace(0.1, np.pi - 0.1, num_angle)
@@ -465,6 +474,8 @@ def plot_oberth_comparison(
     dv_no = np.full_like(B, np.nan)
     dv_ob = np.full_like(B, np.nan)
     gain = np.full_like(B, np.nan)
+    vstar_x, vstar_y = _star_velocity_components(vstar0_kms)
+    vstar_vec = (vstar_x, vstar_y)
 
     for i in range(num_b):
         for j in range(num_angle):
@@ -472,12 +483,12 @@ def plot_oberth_comparison(
             alpha = alpha_arr[j]
             xm0 = r_far_km * np.cos(alpha)
             ym0 = r_far_km * np.sin(alpha)
-            um0 = -v_inf_kms * np.cos(alpha)
-            vm0 = -v_inf_kms * np.sin(alpha)
+            um0 = -v_inf_kms * np.cos(alpha) + vstar_x
+            vm0 = -v_inf_kms * np.sin(alpha) + vstar_y
             try:
-                res_nb = _TBS.gravity_assist_no_burn(xm0, ym0, um0, vm0, vstar0_kms, mu)
+                res_nb = _TBS.gravity_assist_no_burn(xm0, ym0, um0, vm0, vstar_vec, mu)
                 dv_no[i, j] = _TBS.deltaV_lab(um0, vm0, res_nb.umF, res_nb.vmF)
-                res_ob = _TBS.gravity_assist_oberth(xm0, ym0, um0, vm0, vstar0_kms, mu, dv_burn_kms)
+                res_ob = _TBS.gravity_assist_oberth(xm0, ym0, um0, vm0, vstar_vec, mu, dv_burn_kms)
                 dv_ob[i, j] = _TBS.deltaV_lab(um0, vm0, res_ob.umF, res_ob.vmF)
                 gain[i, j] = dv_ob[i, j] - dv_no[i, j]
             except Exception:
@@ -485,47 +496,40 @@ def plot_oberth_comparison(
 
     b_plot = B / 1e6
     a_plot = np.degrees(A)
-    figs = []
+    figs: List[plt.Figure] = []
+    tag = body_label.lower().replace(" ", "_")
 
-    # 3-panel comparison
-    fig1, axes = plt.subplots(1, 3, figsize=(20, 6))
-    for ax, (data, label, cmap) in zip(axes, [
-        (dv_no, "ΔV no-burn (km/s)", "hot_r"),
-        (dv_ob, f"ΔV Oberth Δv={dv_burn_kms} km/s", "hot_r"),
-        (gain, "Oberth gain (km/s)", "RdYlGn"),
-    ]):
+    panels = [
+        (dv_no, "Delta-V no-burn (km/s)", "hot_r", f"oberth_comparison_no_burn_{tag}.png"),
+        (dv_ob, f"Delta-V Oberth burn Delta-v={dv_burn_kms} km/s", "hot_r", f"oberth_comparison_with_burn_{tag}.png"),
+        (gain, "Oberth gain (km/s)", "RdYlGn", f"oberth_comparison_gain_{tag}.png"),
+    ]
+    for data, label, cmap, fname in panels:
+        fig, ax = plt.subplots(figsize=(14, 8))
         cf = ax.contourf(a_plot, b_plot, data, levels=25, cmap=cmap)
-        fig1.colorbar(cf, ax=ax, label=label)
-        ax.set_xlabel("α (°)")
-        ax.set_ylabel("b (10⁶ km)")
-        ax.set_title(label)
-    fig1.suptitle(f"Oberth comparison — {body_label}", fontsize=14, fontweight="bold")
-    fig1.tight_layout()
-    figs.append(fig1)
+        fig.colorbar(cf, ax=ax, label=label)
+        ax.set_xlabel("alpha (deg)")
+        ax.set_ylabel("b (10^6 km)")
+        ax.set_title(f"Oberth comparison - {label} - {body_label}", fontsize=13, fontweight="bold")
+        fig.tight_layout()
+        figs.append(fig)
+        if save_dir:
+            fig.savefig(Path(save_dir) / fname, dpi=dpi)
 
-    # Gain detail with contour overlay
-    fig2, ax = plt.subplots(figsize=(13, 9))
+    fig2, ax = plt.subplots(figsize=(14, 8))
     cf = ax.contourf(a_plot, b_plot, gain, levels=30, cmap="RdYlGn")
     fig2.colorbar(cf, ax=ax, label="Oberth gain (km/s)")
     ax.contour(a_plot, b_plot, dv_no, levels=12, colors="gray", alpha=0.5)
-    ax.set_xlabel("α (°)", fontsize=12)
-    ax.set_ylabel("b (10⁶ km)", fontsize=12)
-    ax.set_title(f"Oberth gain — {body_label}", fontsize=14, fontweight="bold")
+    ax.set_xlabel("alpha (deg)", fontsize=12)
+    ax.set_ylabel("b (10^6 km)", fontsize=12)
+    ax.set_title(f"Oberth gain with no-burn contours - {body_label}", fontsize=13, fontweight="bold")
     fig2.tight_layout()
     figs.append(fig2)
-
     if save_dir:
-        save_dir = Path(save_dir)
-        tag = body_label.lower().replace(" ", "_")
-        fig1.savefig(save_dir / f"oberth_comparison_{tag}.png", dpi=dpi, bbox_inches="tight")
-        fig2.savefig(save_dir / f"oberth_gain_{tag}.png", dpi=dpi, bbox_inches="tight")
+        fig2.savefig(Path(save_dir) / f"oberth_gain_{tag}.png", dpi=dpi)
 
     return figs
 
-
-# ---------------------------------------------------------------------------
-#  7. Trajectory tracks — coloured by orbital energy
-# ---------------------------------------------------------------------------
 
 def plot_trajectory_tracks(
     narrowed: Dict[str, Any],
@@ -533,216 +537,727 @@ def plot_trajectory_tracks(
     analyses_best: List[Dict[str, Any]],
     cfg: Any,
     *,
-    num_b: int = 150,
-    num_angles: int = 50,
+    num_b: int = 140,
+    num_angles: int = 120,
     num_points: int = 200,
     padding_frac: float = 0.20,
+    max_overlay_tracks: int = 220,
+    overlay_lines: bool = True,
+    overlay_line_count: int = 90,
+    gradient_mode: str = "hexbin",
+    confidence_min_count: int = 2,
+    fixed_energy_range: Optional[Tuple[float, float]] = None,
+    hexbin_gridsize: int = 150,
+    kde_sigma_bins: float = 2.0,
+    time_frames: int = 48,
+    export_phase_data: bool = True,
+    export_time_data: bool = True,
     save_dir: Optional[str] = None,
     dpi: int = 150,
 ) -> List[plt.Figure]:
-    """Trajectory tracks for star and planet 2-body baselines (separate figs).
+    """Trajectory + phase diagnostics for narrowed 2-body baselines.
 
-    Each figure shows hyperbolic trajectories coloured by specific orbital
-    energy (½ΔV², km²/s²) with 3-body candidate tracks overlaid in cyan.
-    Axes are clamped to the extent of the 3-body candidates + padding.
-
-    Parameters
-    ----------
-    narrowed : dict
-        Output from ``compute_narrowed_baselines`` with keys
-        ``"envelope"``, ``"star"``, ``"planet"``.
-    sols_best : list of OdeResult
-        Re-run 3-body solutions for top candidates.
-    analyses_best : list of dict
-        Matching analysis dicts (planet-frame).
-    cfg : FullConfig
-        Configuration (used for masses, radii, system name).
-    num_b, num_angles : int
-        2-body scan resolution  (total = num_b × num_angles per body).
-    num_points : int
-        Position samples per trajectory.
-    padding_frac : float
-        Fractional padding around 3-body extent.
-    save_dir : str or None
-        Directory to save to.
-    dpi : int
-        Output resolution.
-
-    Returns
-    -------
-    list of matplotlib.figure.Figure
-        One figure per scattering body (star, planet).
+    Parameters added for publication-grade gradients:
+    - overlay_lines / overlay_line_count: optional trajectory overlays on top of gradients
+    - gradient_mode: legacy | line_overlay | hexbin | kde | time_video
+    - confidence_min_count: minimum per-bin support before a pixel is trusted
+    - fixed_energy_range: optional (vmin, vmax) to enforce fixed normalization
+    - hexbin_gridsize / kde_sigma_bins: estimator controls
+    - time_frames/export_time_data: frame cube export for downstream animation
     """
     from .twobody import TwoBodyEncounter, TrajectoryResult
+
+    # Keep signature parity; currently unused directly.
+    _ = analyses_best
 
     envelope = narrowed.get("envelope")
     if envelope is None:
         fig, ax = plt.subplots(figsize=(8, 4))
-        ax.text(0.5, 0.5, "No envelope — skipped",
-                ha="center", va="center", fontsize=14, transform=ax.transAxes)
+        ax.text(
+            0.5, 0.5, "No envelope - skipped",
+            ha="center", va="center", fontsize=14, transform=ax.transAxes,
+        )
         return [fig]
 
-    # ------------------------------------------------------------------
-    # 1.  Collect 3-body candidate positions (km) for axis limits
-    # ------------------------------------------------------------------
-    all_x, all_y = [], []
-    for sol in sols_best:
-        if sol is not None:
-            x3 = sol.y[0] - sol.y[4]   # sat_x – planet_x  (planet frame)
-            y3 = sol.y[1] - sol.y[5]   # sat_y – planet_y
-            all_x.append(x3)
-            all_y.append(y3)
+    mode = str(gradient_mode).strip().lower()
+    valid_modes = {"legacy", "line_overlay", "hexbin", "kde", "time_video"}
+    if mode not in valid_modes:
+        raise ValueError(f"Unknown gradient_mode '{gradient_mode}'. Valid: {sorted(valid_modes)}")
 
-    if all_x:
-        all_x = np.concatenate(all_x)
-        all_y = np.concatenate(all_y)
-    else:
-        # Fallback: use envelope b range
-        span = envelope.b_max * 2
-        all_x = np.array([-span, span])
-        all_y = np.array([-span, span])
+    min_count = max(0, int(confidence_min_count))
+    count_thresh = max(1, min_count)
+    overlay_line_count = max(0, int(overlay_line_count))
+    hexbin_gridsize = max(20, int(hexbin_gridsize))
+    kde_sigma_bins = max(0.1, float(kde_sigma_bins))
+    time_frames = max(2, int(time_frames))
 
-    x_lo, x_hi = float(all_x.min()), float(all_x.max())
-    y_lo, y_hi = float(all_y.min()), float(all_y.max())
-    # Ensure square with padding
-    cx, cy = 0.5 * (x_lo + x_hi), 0.5 * (y_lo + y_hi)
-    half = max(x_hi - x_lo, y_hi - y_lo) * 0.5 * (1 + padding_frac)
-    xlim = (cx - half, cx + half)
-    ylim = (cy - half, cy + half)
-
-    # Convert limits to display units (×10⁹ km)
-    SCALE = 1e9
-    xlim_d = (xlim[0] / SCALE, xlim[1] / SCALE)
-    ylim_d = (ylim[0] / SCALE, ylim[1] / SCALE)
-
-    # ------------------------------------------------------------------
-    # 2.  Build encounters & run scans
-    # ------------------------------------------------------------------
     M_star_kg = cfg.system.M_star_Msun * M_SUN
     M_planet_kg = cfg.system.M_planet_Mjup * M_JUP
     R_star_km = getattr(cfg.system, "R_star_Rsun", 1.0) * R_SUN
     R_planet_km = getattr(cfg.system, "R_planet_Rjup", 1.155) * R_JUP
 
     bodies = [
-        ("Star",   M_star_kg,  R_star_km),
-        ("Planet", M_planet_kg, R_planet_km),
+        ("star", "Star", M_star_kg, R_star_km, narrowed.get("star")),
+        ("planet", "Planet", M_planet_kg, R_planet_km, narrowed.get("planet")),
     ]
 
-    # Envelope-derived scan parameters
-    v_approach = 0.5 * (envelope.v_approach_min + envelope.v_approach_max)
-    vstar0 = envelope.vstar0
+    vstar_vec = envelope.vstar_vec if hasattr(envelope, "vstar_vec") else (0.0, envelope.vstar0)
+    vstar_x, vstar_y = _star_velocity_components(vstar_vec)
 
-    if envelope.b_min > 0:
-        b_values = np.logspace(
-            np.log10(envelope.b_min),
-            np.log10(envelope.b_max),
-            num_b,
-        )
-    else:
-        b_values = np.linspace(envelope.b_min, envelope.b_max, num_b)
-
-    angle_values = np.linspace(envelope.angle_min, envelope.angle_max, num_angles)
-    r_start = 1.0e11  # km — far enough for asymptotic approach
+    r_start = 1.0e11
     if hasattr(cfg, "two_body") and cfg.two_body is not None:
         r_start = cfg.two_body.r_start_km
 
-    scan_results: Dict[str, List[TrajectoryResult]] = {}
-    for label, M_kg, R_km in bodies:
-        enc = TwoBodyEncounter(M_kg, G_KM, label=label.lower(), R_body_km=R_km)
-        trajs, _energies, _grid = enc.scan_parameter_space(
-            v_approach=v_approach,
-            vstar0=vstar0,
-            r_start=r_start,
-            b_values=b_values,
-            angle_values=angle_values,
-            num_points=num_points,
-        )
-        scan_results[label] = trajs
-
-    # ------------------------------------------------------------------
-    # 3.  One figure per body
-    # ------------------------------------------------------------------
-    cmap = plt.cm.get_cmap("twilight")
+    cmap = plt.cm.get_cmap("twilight" if mode == "legacy" else "viridis")
     sys_name = getattr(cfg.system, "name", "")
     envelope_line = (
-        f"Envelope: v ∈ [{envelope.v_approach_min:.1f}, {envelope.v_approach_max:.1f}] km/s   "
-        f"b ∈ [{envelope.b_min:.2e}, {envelope.b_max:.2e}] km   "
-        f"α ∈ [{np.degrees(envelope.angle_min):.0f}°, {np.degrees(envelope.angle_max):.0f}°]"
+        f"Envelope: v in [{envelope.v_approach_min:.1f}, {envelope.v_approach_max:.1f}] km/s, "
+        f"b in [{envelope.b_min:.2e}, {envelope.b_max:.2e}] km, "
+        f"alpha in [{np.degrees(envelope.angle_min):.0f} deg, {np.degrees(envelope.angle_max):.0f} deg]"
     )
 
     figs: List[plt.Figure] = []
 
-    for label, _M, _R in bodies:
-        trajs = scan_results[label]
-        fig, ax = plt.subplots(figsize=(13, 11))
+    def _resolve_norm(values: np.ndarray) -> Tuple[plt.Normalize, float, float]:
+        finite = np.asarray(values, dtype=float)
+        finite = finite[np.isfinite(finite)]
+        if finite.size == 0:
+            finite = np.array([0.0, 1.0], dtype=float)
 
-        # Colour normalisation from this body's energy range
-        valid_e = np.array([t.orbital_energy for t in trajs if t.valid])
-        if len(valid_e) == 0:
-            ax.text(0.5, 0.5, f"{label}: no valid trajectories",
-                    ha="center", va="center", fontsize=14,
-                    transform=ax.transAxes)
-            figs.append(fig)
-            continue
+        if fixed_energy_range is not None:
+            vmin = float(fixed_energy_range[0])
+            vmax = float(fixed_energy_range[1])
+            if vmax <= vmin:
+                raise ValueError(
+                    f"fixed_energy_range must satisfy vmax > vmin, got {fixed_energy_range}"
+                )
+            return plt.Normalize(vmin=vmin, vmax=vmax), vmin, vmax
 
-        norm = plt.Normalize(vmin=valid_e.min(), vmax=valid_e.max())
+        if mode == "legacy":
+            vmin = float(np.nanmin(finite))
+            vmax = float(np.nanmax(finite))
+        else:
+            vmin = float(np.nanpercentile(finite, 2.0))
+            vmax = float(np.nanpercentile(finite, 98.0))
+        if not np.isfinite(vmin):
+            vmin = float(np.nanmin(finite))
+        if not np.isfinite(vmax):
+            vmax = float(np.nanmax(finite))
+        if vmax <= vmin:
+            vmin = float(np.nanmin(finite))
+            vmax = float(np.nanmax(finite))
+        if vmax <= vmin:
+            vmax = vmin + 1.0
+        return plt.Normalize(vmin=vmin, vmax=vmax), vmin, vmax
 
-        # 2-body trajectory curves
-        for traj in trajs:
-            if not traj.valid or len(traj.x_star) == 0:
-                continue
-            x = traj.x_star / SCALE
-            y = traj.y_star / SCALE
-            colour = cmap(norm(traj.orbital_energy))
-            ax.plot(x, y, lw=0.8, color=colour, alpha=0.55, zorder=2)
-
-        # 3-body candidate overlays
+    def _extract_3body_tracks(tag: str) -> List[Tuple[np.ndarray, np.ndarray]]:
+        tracks: List[Tuple[np.ndarray, np.ndarray]] = []
         for sol in sols_best:
             if sol is None:
                 continue
-            x3 = (sol.y[0] - sol.y[4]) / SCALE
-            y3 = (sol.y[1] - sol.y[5]) / SCALE
-            ax.plot(x3, y3, lw=1.6, color="cyan", alpha=0.85, zorder=5)
+            y_raw = sol.get("y") if isinstance(sol, dict) else getattr(sol, "y", None)
+            if y_raw is None:
+                continue
+            y = np.asarray(y_raw, dtype=float)
+            if y.ndim != 2 or y.shape[0] < 10:
+                continue
+            if tag == "star":
+                x_rel = y[8] - y[0]
+                y_rel = y[9] - y[1]
+            else:
+                x_rel = y[8] - y[4]
+                y_rel = y[9] - y[5]
+            tracks.append((x_rel, y_rel))
+        return tracks
 
-        # Scattering body marker at origin
-        ax.plot(0, 0, "*", color="gold", markersize=20,
-                markeredgecolor="black", markeredgewidth=1.0, zorder=10)
+    def _phase_grid_from_samples(
+        sample_b: np.ndarray,
+        sample_a: np.ndarray,
+        sample_e: np.ndarray,
+        sample_vx: np.ndarray,
+        sample_vy: np.ndarray,
+        b_edges: np.ndarray,
+        a_edges: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        nb = len(b_edges) - 1
+        na = len(a_edges) - 1
+        e_grid = np.full((nb, na), np.nan)
+        vx_grid = np.full((nb, na), np.nan)
+        vy_grid = np.full((nb, na), np.nan)
+        n_grid = np.zeros((nb, na), dtype=int)
 
-        # Colourbar
-        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-        sm.set_array([])
-        cb = fig.colorbar(sm, ax=ax, shrink=0.78, pad=0.02)
-        cb.set_label("½ΔV²  (km²/s² ≡ MJ/kg)", fontsize=12)
+        bi = np.digitize(sample_b, b_edges) - 1
+        ai = np.digitize(sample_a, a_edges) - 1
+        valid = (
+            (bi >= 0) & (bi < nb) &
+            (ai >= 0) & (ai < na) &
+            np.isfinite(sample_e)
+        )
+        idx = np.where(valid)[0]
+        for k in idx:
+            i, j = int(bi[k]), int(ai[k])
+            n_grid[i, j] += 1
+            if np.isnan(e_grid[i, j]) or sample_e[k] > e_grid[i, j]:
+                e_grid[i, j] = sample_e[k]
+                vx_grid[i, j] = sample_vx[k]
+                vy_grid[i, j] = sample_vy[k]
 
-        # Legend
-        legend_elements = [
-            Line2D([0], [0], color="cyan", lw=2, label="3-body candidates"),
-            Line2D([0], [0], marker="*", color="w", markerfacecolor="gold",
-                   markersize=14, markeredgecolor="black",
-                   label=f"Scattering body ({label.lower()})"),
-        ]
+        return e_grid, vx_grid, vy_grid, n_grid
+
+    def _collect_trajectory_points(
+        trajs: List[TrajectoryResult],
+    ) -> Tuple[List[np.ndarray], List[np.ndarray], List[TrajectoryResult], np.ndarray, np.ndarray, np.ndarray]:
+        xs_list: List[np.ndarray] = []
+        ys_list: List[np.ndarray] = []
+        traj_kept: List[TrajectoryResult] = []
+        energies: List[np.ndarray] = []
+        for traj in trajs:
+            if not traj.valid or len(traj.x_star) == 0:
+                continue
+            xs = np.asarray(traj.x_star, dtype=float)
+            ys = np.asarray(traj.y_star, dtype=float)
+            xs_list.append(xs)
+            ys_list.append(ys)
+            traj_kept.append(traj)
+            energies.append(np.full(xs.shape, float(traj.orbital_energy), dtype=float))
+
+        if not xs_list:
+            return [], [], [], np.array([]), np.array([]), np.array([])
+
+        xs_cat = np.concatenate(xs_list)
+        ys_cat = np.concatenate(ys_list)
+        es_cat = np.concatenate(energies)
+        return xs_list, ys_list, traj_kept, xs_cat, ys_cat, es_cat
+
+    def _grid_mean_energy(
+        xs: np.ndarray,
+        ys: np.ndarray,
+        es: np.ndarray,
+        r_vis_km: float,
+        bins: int,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        xy_range = [[-r_vis_km, r_vis_km], [-r_vis_km, r_vis_km]]
+        sum_e, xedges, yedges = np.histogram2d(
+            xs, ys, bins=bins, range=xy_range, weights=es,
+        )
+        cnt, _, _ = np.histogram2d(
+            xs, ys, bins=bins, range=xy_range,
+        )
+        with np.errstate(invalid="ignore", divide="ignore"):
+            e_grid = sum_e / cnt
+        return e_grid, cnt, xedges, yedges
+
+    def _build_time_evolution_cube(
+        xs_list: List[np.ndarray],
+        ys_list: List[np.ndarray],
+        trajs_keep: List[TrajectoryResult],
+        r_vis_km: float,
+        bins: int,
+        n_frames: int,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        xy_range = [[-r_vis_km, r_vis_km], [-r_vis_km, r_vis_km]]
+        xedges = np.linspace(-r_vis_km, r_vis_km, bins + 1)
+        yedges = np.linspace(-r_vis_km, r_vis_km, bins + 1)
+        e_frames = np.full((n_frames, bins, bins), np.nan, dtype=float)
+        c_frames = np.zeros((n_frames, bins, bins), dtype=float)
+
+        for fi in range(n_frames):
+            frac = fi / float(n_frames - 1)
+            sum_e_f = np.zeros((bins, bins), dtype=float)
+            cnt_f = np.zeros((bins, bins), dtype=float)
+            for xs, ys, traj in zip(xs_list, ys_list, trajs_keep):
+                n = len(xs)
+                if n < 2:
+                    continue
+                idx = max(1, int(round(frac * (n - 1))))
+                xseg = xs[: idx + 1]
+                yseg = ys[: idx + 1]
+                eseg = np.full(xseg.shape, float(traj.orbital_energy), dtype=float)
+                hs, _, _ = np.histogram2d(xseg, yseg, bins=bins, range=xy_range, weights=eseg)
+                hc, _, _ = np.histogram2d(xseg, yseg, bins=bins, range=xy_range)
+                sum_e_f += hs
+                cnt_f += hc
+
+            with np.errstate(invalid="ignore", divide="ignore"):
+                ef = sum_e_f / cnt_f
+            ef[cnt_f < count_thresh] = np.nan
+            e_frames[fi] = ef
+            c_frames[fi] = cnt_f
+
+        return e_frames, c_frames, xedges, yedges
+
+    def _estimate_min_spacing(values: np.ndarray) -> float:
+        vals = np.asarray(values, dtype=float)
+        vals = vals[np.isfinite(vals)]
+        if vals.size < 2:
+            return 0.0
+        uniq = np.unique(np.round(vals, 12))
+        if uniq.size < 2:
+            return 0.0
+        diffs = np.diff(np.sort(uniq))
+        diffs = diffs[(diffs > 0) & np.isfinite(diffs)]
+        if diffs.size == 0:
+            return 0.0
+        return float(np.min(diffs))
+
+    def _expand_limits(lo: float, hi: float, frac: float, min_pad: float) -> Tuple[float, float]:
+        if not (np.isfinite(lo) and np.isfinite(hi)):
+            return lo, hi
+        if hi < lo:
+            lo, hi = hi, lo
+        span = hi - lo
+        pad = max(float(min_pad), float(span * frac))
+        if span <= 0:
+            pad = max(pad, 1.0)
+        return lo - pad, hi + pad
+
+    for tag, label, M_kg, R_km, narrowed_body in bodies:
+        if narrowed_body is None:
+            fig, ax = plt.subplots(figsize=(8, 4))
+            ax.text(
+                0.5, 0.5, f"{label}: no narrowed baseline result",
+                ha="center", va="center", fontsize=14, transform=ax.transAxes,
+            )
+            figs.append(fig)
+            continue
+
+        sample_v = np.asarray(getattr(narrowed_body, "sample_v_approach", np.array([])), dtype=float)
+        sample_b = np.asarray(getattr(narrowed_body, "sample_b", np.array([])), dtype=float)
+        sample_a = np.asarray(getattr(narrowed_body, "sample_angle", np.array([])), dtype=float)
+        sample_e = np.asarray(getattr(narrowed_body, "sample_energy", np.array([])), dtype=float)
+        sample_vxf = np.asarray(getattr(narrowed_body, "sample_vx_final_rel", np.array([])), dtype=float)
+        sample_vyf = np.asarray(getattr(narrowed_body, "sample_vy_final_rel", np.array([])), dtype=float)
+
+        if sample_e.size == 0:
+            fig, ax = plt.subplots(figsize=(8, 4))
+            ax.text(
+                0.5, 0.5, f"{label}: no valid sample analytics",
+                ha="center", va="center", fontsize=14, transform=ax.transAxes,
+            )
+            figs.append(fig)
+            continue
+
+        energy_norm, e_vmin, e_vmax = _resolve_norm(sample_e)
+
+        # 1) phase map from narrowed sweep samples
+        if envelope.b_min > 0 and (envelope.b_max / envelope.b_min) > 20:
+            b_edges = np.logspace(np.log10(envelope.b_min), np.log10(envelope.b_max), num_b + 1)
+        else:
+            b_edges = np.linspace(envelope.b_min, envelope.b_max, num_b + 1)
+        a_edges = np.linspace(envelope.angle_min, envelope.angle_max, num_angles + 1)
+
+        e_grid, vx_grid, vy_grid, n_grid = _phase_grid_from_samples(
+            sample_b, sample_a, sample_e, sample_vxf, sample_vyf, b_edges, a_edges
+        )
+
+        phase_mask = n_grid >= count_thresh
+        e_grid_plot = np.where(phase_mask, e_grid, np.nan)
+        vx_grid_plot = np.where(phase_mask, vx_grid, np.nan)
+        vy_grid_plot = np.where(phase_mask, vy_grid, np.nan)
+
+        b_cent = 0.5 * (b_edges[:-1] + b_edges[1:])
+        a_cent = 0.5 * (a_edges[:-1] + a_edges[1:])
+        A_deg_edges = np.degrees(a_edges)
+        A_deg_cent = np.degrees(a_cent)
+
+        fig_phase_e, ax_e = plt.subplots(figsize=(14, 8))
+
+        pcm = ax_e.pcolormesh(
+            A_deg_edges, b_edges / 1e6, e_grid_plot,
+            shading="auto", cmap="viridis", norm=energy_norm,
+        )
+        cb1 = fig_phase_e.colorbar(pcm, ax=ax_e, pad=0.02)
+        cb1.set_label("Scattering energy 0.5|DeltaV|^2 (km^2/s^2)")
+        ax_e.set_xlabel("Approach angle alpha (deg)")
+        ax_e.set_ylabel("Impact parameter b (10^6 km)")
+        ax_e.set_title(f"{label}: scattering-energy gradient")
+        ax_e.grid(True, alpha=0.2, linestyle="--")
+        if np.any(phase_mask):
+            ax_e.contour(
+                A_deg_cent, b_cent / 1e6, phase_mask.astype(float),
+                levels=[0.5], colors="white", linewidths=0.8, alpha=0.5,
+            )
+        fig_phase_e.suptitle(
+            f"{label} phase diagnostics - {sys_name}\n"
+            f"{envelope_line}\n"
+            f"mode={mode}, conf>={count_thresh} samples/bin, energy=[{e_vmin:.2f}, {e_vmax:.2f}]",
+            fontsize=12, fontweight="bold",
+        )
+        fig_phase_e.tight_layout()
+        figs.append(fig_phase_e)
+
+        fig_phase_v, ax_v = plt.subplots(figsize=(14, 8))
+        heading = np.degrees(np.arctan2(vy_grid_plot, vx_grid_plot))
+        pcm2 = ax_v.pcolormesh(
+            A_deg_edges, b_edges / 1e6, heading,
+            shading="auto", cmap="twilight", vmin=-180.0, vmax=180.0,
+        )
+        cb2 = fig_phase_v.colorbar(pcm2, ax=ax_v, pad=0.02)
+        cb2.set_label("Final velocity heading (deg)")
+
+        sb = max(1, len(b_cent) // 18)
+        sa = max(1, len(a_cent) // 20)
+        AQ, BQ = np.meshgrid(A_deg_cent[::sa], b_cent[::sb] / 1e6, indexing="xy")
+        U = vx_grid_plot[::sb, ::sa]
+        V = vy_grid_plot[::sb, ::sa]
+        M = np.hypot(U, V)
+        mask_q = np.isfinite(M) & (M > 0)
+        Uq = np.zeros_like(U)
+        Vq = np.zeros_like(V)
+        Uq[mask_q] = U[mask_q] / M[mask_q]
+        Vq[mask_q] = V[mask_q] / M[mask_q]
+        ax_v.quiver(
+            AQ, BQ, Uq, Vq,
+            color="white", alpha=0.75, pivot="mid",
+            scale=42, width=0.0022, headwidth=3.5,
+        )
+
+        ax_v.set_xlabel("Approach angle alpha (deg)")
+        ax_v.set_ylabel("Impact parameter b (10^6 km)")
+        ax_v.set_title(f"{label}: final velocity-direction field")
+        ax_v.grid(True, alpha=0.2, linestyle="--")
+        fig_phase_v.suptitle(
+            f"{label} phase diagnostics - {sys_name}\n"
+            f"{envelope_line}\n"
+            f"mode={mode}, conf>={count_thresh} samples/bin, energy=[{e_vmin:.2f}, {e_vmax:.2f}]",
+            fontsize=12, fontweight="bold",
+        )
+        fig_phase_v.tight_layout()
+        figs.append(fig_phase_v)
+
+        # 2) reconstruct representative trajectories for track-space rendering
+        enc = TwoBodyEncounter(M_kg, G_KM, label=tag, R_body_km=R_km)
+        n_valid = len(sample_e)
+        order = np.argsort(sample_e)
+        if n_valid > max_overlay_tracks:
+            pick = order[np.linspace(0, n_valid - 1, max_overlay_tracks, dtype=int)]
+        else:
+            pick = order
+
+        trajs: List[TrajectoryResult] = []
+        for k in pick:
+            v_approach = float(sample_v[k])
+            angle = float(sample_a[k])
+            b_mag = float(sample_b[k])
+            vx = v_approach * np.cos(angle)
+            vy = v_approach * np.sin(angle)
+            perp = angle + np.pi / 2.0
+            xm0 = -np.cos(angle) * r_start + b_mag * np.cos(perp)
+            ym0 = -np.sin(angle) * r_start + b_mag * np.sin(perp)
+            um0 = vx + vstar_x
+            vm0 = vy + vstar_y
+            tr = enc.compute_trajectory(xm0, ym0, um0, vm0, (vstar_x, vstar_y), num_points=num_points)
+            if tr.valid and len(tr.x_star) > 0:
+                trajs.append(tr)
+
+        fig, ax = plt.subplots(figsize=(14, 8))
+        valid_e = np.array([t.orbital_energy for t in trajs if t.valid], dtype=float)
+        if valid_e.size == 0:
+            ax.text(
+                0.5, 0.5, f"{label}: no representative trajectories",
+                ha="center", va="center", fontsize=14, transform=ax.transAxes,
+            )
+            figs.append(fig)
+            continue
+
+        x_pool: List[np.ndarray] = [t.x_star for t in trajs if t.valid]
+        y_pool: List[np.ndarray] = [t.y_star for t in trajs if t.valid]
+        tracks_3b = _extract_3body_tracks(tag)
+        for x3, y3 in tracks_3b:
+            x_pool.append(x3)
+            y_pool.append(y3)
+
+        if x_pool:
+            xx = np.concatenate(x_pool)
+            yy = np.concatenate(y_pool)
+            rr = np.hypot(xx, yy)
+            rr = rr[np.isfinite(rr)]
+            if rr.size > 0:
+                r_vis = float(np.percentile(rr, 96.0))
+            else:
+                r_vis = float(envelope.b_max * 1.5)
+        else:
+            r_vis = float(envelope.b_max * 1.5)
+
+        r_vis = max(r_vis, float(R_km * 3.0), float(envelope.b_max * 0.8))
+        r_vis *= (1.0 + padding_frac)
+        SCALE = 1e6
+        grad_pad_frac = max(0.05, min(0.30, 0.5 * float(padding_frac)))
+        xlim_grad_km: Tuple[float, float] = (-r_vis, r_vis)
+        ylim_grad_km: Tuple[float, float] = (-r_vis, r_vis)
+
+        xs_list, ys_list, traj_keep, xs_cat, ys_cat, es_cat = _collect_trajectory_points(trajs)
+        time_cube_energy = None
+        time_cube_count = None
+        time_xedges = None
+        time_yedges = None
+
+        if xs_cat.size > 0:
+            if mode == "legacy":
+                # Legacy style: clean line-rendered trajectories colored by specific orbital energy.
+                for traj in trajs:
+                    if not traj.valid or len(traj.x_star) == 0:
+                        continue
+                    x = traj.x_star / SCALE
+                    y = traj.y_star / SCALE
+                    colour = cmap(energy_norm(traj.orbital_energy))
+                    ax.plot(x, y, lw=1.35, color=colour, alpha=0.72, zorder=2)
+                sm = plt.cm.ScalarMappable(cmap=cmap, norm=energy_norm)
+                sm.set_array([])
+                cb_bg = fig.colorbar(sm, ax=ax, shrink=0.78, pad=0.02)
+            elif mode == "hexbin":
+                hb = ax.hexbin(
+                    xs_cat / SCALE,
+                    ys_cat / SCALE,
+                    C=es_cat,
+                    reduce_C_function=np.mean,
+                    gridsize=hexbin_gridsize,
+                    extent=(-r_vis / SCALE, r_vis / SCALE, -r_vis / SCALE, r_vis / SCALE),
+                    mincnt=count_thresh,
+                    cmap="viridis",
+                    norm=energy_norm,
+                    linewidths=0.0,
+                    alpha=0.95,
+                )
+                cb_bg = fig.colorbar(hb, ax=ax, shrink=0.78, pad=0.02)
+                offsets = np.asarray(hb.get_offsets(), dtype=float)
+                if offsets.size > 0:
+                    off_x = offsets[:, 0] * SCALE
+                    off_y = offsets[:, 1] * SCALE
+                    finite_off = np.isfinite(off_x) & np.isfinite(off_y)
+                    if np.any(finite_off):
+                        off_x = off_x[finite_off]
+                        off_y = off_y[finite_off]
+                        step_x = _estimate_min_spacing(off_x)
+                        step_y = _estimate_min_spacing(off_y)
+                        xlo, xhi = _expand_limits(
+                            float(np.min(off_x)),
+                            float(np.max(off_x)),
+                            frac=grad_pad_frac,
+                            min_pad=max(float(R_km * 0.25), step_x * 0.75, 1.0),
+                        )
+                        ylo, yhi = _expand_limits(
+                            float(np.min(off_y)),
+                            float(np.max(off_y)),
+                            frac=grad_pad_frac,
+                            min_pad=max(float(R_km * 0.25), step_y * 0.75, 1.0),
+                        )
+                        xlim_grad_km = (xlo, xhi)
+                        ylim_grad_km = (ylo, yhi)
+            else:
+                bins = max(80, int(round(hexbin_gridsize * 1.25)))
+                e_bg, cnt, xedges, yedges = _grid_mean_energy(xs_cat, ys_cat, es_cat, r_vis, bins)
+
+                if mode in {"kde", "time_video"}:
+                    sum_e, _, _ = np.histogram2d(
+                        xs_cat,
+                        ys_cat,
+                        bins=bins,
+                        range=[[-r_vis, r_vis], [-r_vis, r_vis]],
+                        weights=es_cat,
+                    )
+                    sum_e_s = gaussian_filter(sum_e, sigma=kde_sigma_bins, mode="nearest")
+                    cnt_s = gaussian_filter(cnt.astype(float), sigma=kde_sigma_bins, mode="nearest")
+                    with np.errstate(invalid="ignore", divide="ignore"):
+                        e_bg = sum_e_s / cnt_s
+                    e_bg[cnt_s < count_thresh] = np.nan
+                else:
+                    e_bg[cnt < count_thresh] = np.nan
+
+                if mode == "time_video":
+                    time_cube_energy, time_cube_count, time_xedges, time_yedges = _build_time_evolution_cube(
+                        xs_list, ys_list, traj_keep, r_vis, bins, time_frames
+                    )
+                    e_bg = time_cube_energy[-1]
+
+                pcm_bg = ax.pcolormesh(
+                    xedges / SCALE,
+                    yedges / SCALE,
+                    e_bg.T,
+                    shading="auto",
+                    cmap="viridis",
+                    norm=energy_norm,
+                    alpha=0.92,
+                )
+                cb_bg = fig.colorbar(pcm_bg, ax=ax, shrink=0.78, pad=0.02)
+                finite_bg = np.isfinite(e_bg)
+                if np.any(finite_bg):
+                    ix, iy = np.where(finite_bg)
+                    xlo = float(xedges[int(np.min(ix))])
+                    xhi = float(xedges[int(np.max(ix)) + 1])
+                    ylo = float(yedges[int(np.min(iy))])
+                    yhi = float(yedges[int(np.max(iy)) + 1])
+                    xlim_grad_km = _expand_limits(
+                        xlo,
+                        xhi,
+                        frac=grad_pad_frac,
+                        min_pad=max(float(R_km * 0.25), 1.0),
+                    )
+                    ylim_grad_km = _expand_limits(
+                        ylo,
+                        yhi,
+                        frac=grad_pad_frac,
+                        min_pad=max(float(R_km * 0.25), 1.0),
+                    )
+
+            if mode == "legacy":
+                cb_bg.set_label("Orbital Energy (km^2/s^2 ≡ MJ/kg)", fontsize=12)
+            else:
+                cb_bg.set_label("Scattering energy 0.5|DeltaV|^2 (km^2/s^2)", fontsize=12)
+
+        xlo_plot, xhi_plot = xlim_grad_km
+        ylo_plot, yhi_plot = ylim_grad_km
+        body_pad = max(float(R_km * 1.2), 1.0)
+        xlo_plot = min(xlo_plot, -body_pad)
+        xhi_plot = max(xhi_plot, body_pad)
+        ylo_plot = min(ylo_plot, -body_pad)
+        yhi_plot = max(yhi_plot, body_pad)
+
+        if mode != "legacy":
+            gx = np.linspace(xlo_plot, xhi_plot, 260)
+            gy = np.linspace(ylo_plot, yhi_plot, 260)
+            GX, GY = np.meshgrid(gx, gy, indexing="xy")
+            GR = np.hypot(GX, GY)
+            GR = np.maximum(GR, max(R_km, 1.0))
+            phi = (G_KM * M_kg) / GR
+            lev_lo = np.percentile(phi, 20)
+            lev_hi = np.percentile(phi, 99.5)
+            if lev_hi > lev_lo:
+                levels = np.geomspace(max(lev_lo, 1e-9), lev_hi, 10)
+                ax.contour(
+                    GX / SCALE,
+                    GY / SCALE,
+                    phi,
+                    levels=levels,
+                    colors="white",
+                    alpha=0.16,
+                    linewidths=0.8,
+                    zorder=1,
+                )
+
+        if mode != "legacy" and overlay_lines and overlay_line_count > 0:
+            overlay_trajs = trajs
+            if len(trajs) > overlay_line_count:
+                stride = max(1, len(trajs) // overlay_line_count)
+                overlay_trajs = trajs[::stride]
+            line_alpha = 0.35 if mode == "line_overlay" else 0.20
+            for traj in overlay_trajs:
+                x = traj.x_star / SCALE
+                y = traj.y_star / SCALE
+                colour = cmap(energy_norm(traj.orbital_energy))
+                ax.plot(x, y, lw=0.65, color=colour, alpha=line_alpha, zorder=2)
+
+        for x3, y3 in tracks_3b:
+            ax.plot(x3 / SCALE, y3 / SCALE, lw=1.6, color="cyan", alpha=0.85, zorder=5)
+
+        if mode == "legacy":
+            ax.plot(
+                0, 0, "*", color="black", markersize=20,
+                markeredgecolor="white", markeredgewidth=1.5, zorder=10,
+            )
+        else:
+            ax.plot(
+                0, 0, "*", color="gold", markersize=20,
+                markeredgecolor="black", markeredgewidth=1.0, zorder=10,
+            )
+
+        if mode == "legacy":
+            legend_elements = [
+                Line2D([0], [0], color="cyan", lw=2, label="3-body candidates"),
+                Line2D(
+                    [0], [0], marker="*", color="w", markerfacecolor="black",
+                    markersize=14, markeredgecolor="white",
+                    label=f"Scattering body ({label.lower()})",
+                ),
+            ]
+        else:
+            legend_elements = [
+                Line2D([0], [0], color="cyan", lw=2, label="3-body candidates"),
+                Line2D(
+                    [0], [0], marker="*", color="w", markerfacecolor="gold",
+                    markersize=14, markeredgecolor="black",
+                    label=f"Scattering body ({label.lower()})",
+                ),
+            ]
         ax.legend(handles=legend_elements, loc="upper left", fontsize=11)
 
-        # Axis cosmetics
-        ax.set_xlim(xlim_d)
-        ax.set_ylim(ylim_d)
-        ax.set_xlabel("X  (×10⁹ km)", fontsize=12)
-        ax.set_ylabel("Y  (×10⁹ km)", fontsize=12)
-        ax.set_title(
-            f"{label} Scattering Trajectory Tracks — {sys_name}\n"
-            f"{len(trajs)} trajectories  |  {envelope_line}",
-            fontsize=13, fontweight="bold",
-        )
+        ax.set_xlim((xlo_plot / SCALE, xhi_plot / SCALE))
+        ax.set_ylim((ylo_plot / SCALE, yhi_plot / SCALE))
+        ax.set_xlabel("X relative (10^6 km)", fontsize=12)
+        ax.set_ylabel("Y relative (10^6 km)", fontsize=12)
+        if mode == "legacy":
+            ax.set_title(
+                f"Trajectory Tracks Colored by Specific Orbital Energy | {label} Frame",
+                fontsize=13,
+                fontweight="bold",
+            )
+        else:
+            ax.set_title(
+                f"{label} scattering tracks + energy gradient - {sys_name}\n"
+                f"{len(trajs)} representative trajectories | mode={mode} | "
+                f"overlay={'on' if (overlay_lines and overlay_line_count > 0) else 'off'}"
+                f"{f'({overlay_line_count})' if (overlay_lines and overlay_line_count > 0) else ''} | "
+                f"conf>={count_thresh} | "
+                f"energy=[{e_vmin:.2f}, {e_vmax:.2f}]",
+                fontsize=13,
+                fontweight="bold",
+            )
         ax.set_aspect("equal")
         ax.grid(True, alpha=0.2, linestyle="--")
         fig.tight_layout()
 
         if save_dir:
-            tag = label.lower()
             p = Path(save_dir)
-            fig.savefig(p / f"trajectory_tracks_{tag}.png",
-                        dpi=dpi, bbox_inches="tight")
+            fig.savefig(p / f"trajectory_tracks_{tag}.png", dpi=dpi)
+            fig_phase_e.savefig(p / f"trajectory_phase_energy_{tag}.png", dpi=dpi)
+            fig_phase_v.savefig(p / f"trajectory_phase_heading_{tag}.png", dpi=dpi)
+            if export_phase_data:
+                np.savez(
+                    p / f"trajectory_phase_data_{tag}.npz",
+                    angle_edges_rad=a_edges,
+                    b_edges_km=b_edges,
+                    energy_grid=e_grid_plot,
+                    heading_grid_deg=np.degrees(np.arctan2(vy_grid_plot, vx_grid_plot)),
+                    vx_final_grid=vx_grid_plot,
+                    vy_final_grid=vy_grid_plot,
+                    count_grid=n_grid,
+                    sample_v_approach=sample_v,
+                    sample_b=sample_b,
+                    sample_angle=sample_a,
+                    sample_energy=sample_e,
+                    sample_vx_final_rel=sample_vxf,
+                    sample_vy_final_rel=sample_vyf,
+                    vstar_vec=np.array([vstar_x, vstar_y], dtype=float),
+                    r_start_km=float(r_start),
+                    body=tag,
+                    gradient_mode=mode,
+                    confidence_min_count=int(count_thresh),
+                    energy_vmin=float(e_vmin),
+                    energy_vmax=float(e_vmax),
+                )
+
+            if (
+                export_time_data
+                and mode == "time_video"
+                and time_cube_energy is not None
+                and time_cube_count is not None
+                and time_xedges is not None
+                and time_yedges is not None
+            ):
+                np.savez(
+                    p / f"trajectory_time_data_{tag}.npz",
+                    energy_frames=time_cube_energy,
+                    count_frames=time_cube_count,
+                    x_edges_km=time_xedges,
+                    y_edges_km=time_yedges,
+                    frame_count=int(time_frames),
+                    confidence_min_count=int(count_thresh),
+                    energy_vmin=float(e_vmin),
+                    energy_vmax=float(e_vmax),
+                    body=tag,
+                )
 
         figs.append(fig)
 
     return figs
+

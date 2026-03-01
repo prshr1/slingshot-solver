@@ -3,7 +3,7 @@ Configuration management for slingshot solver.
 Supports YAML/JSON config files with Pydantic validation.
 """
 
-from typing import Optional, Literal, Dict, Any
+from typing import Optional, Literal, Dict, Any, List
 import json
 from pathlib import Path
 
@@ -12,7 +12,31 @@ try:
 except ImportError:
     yaml = None
 
-from pydantic import BaseModel, Field, field_validator, ConfigDict
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
+
+
+SelectionMetric = Literal[
+    # Barycentric/inertial metrics
+    "delta_v",
+    "delta_v_pct",
+    "delta_v_abs",
+    "delta_v_vec",
+    "energy_half_dv_vec_sq",
+    "deflection",
+    "deflection_abs",
+    "r_min",
+    "r_star_min",
+    # Planet-frame diagnostics
+    "delta_v_planet_frame",
+    "energy_from_planet_orbit",
+    # Legacy aliases (kept for backward compatibility)
+    "planet_delta_v",
+    "bary_delta_v",
+    "bary_delta_v_pct",
+    "bary_delta_v_abs",
+]
+
+SelectionSign = Literal["maximize", "minimize", "abs"]
 
 
 class SystemConfig(BaseModel):
@@ -26,6 +50,8 @@ class SystemConfig(BaseModel):
             "R_planet_Rjup": 1.155,
             "R_star_Rsun": 4.06,
             "a_planet_AU": 0.0896,
+            "bulk_velocity_vx_kms": 0.0,
+            "bulk_velocity_vy_kms": 0.0,
         }
     })
     
@@ -35,6 +61,18 @@ class SystemConfig(BaseModel):
     R_planet_Rjup: float = Field(default=1.155, ge=0.1, le=10.0, description="Planet radius in Jupiter radii")
     R_star_Rsun: float = Field(default=4.06, ge=0.1, le=50.0, description="Star radius in solar radii")
     a_planet_AU: float = Field(default=0.0896, ge=0.001, le=1.0, description="Orbital semi-major axis in AU")
+    bulk_velocity_vx_kms: float = Field(
+        default=0.0,
+        ge=-2000.0,
+        le=2000.0,
+        description="System bulk velocity x-component in km/s (Galilean boost applied to star+planet initial velocities)",
+    )
+    bulk_velocity_vy_kms: float = Field(
+        default=0.0,
+        ge=-2000.0,
+        le=2000.0,
+        description="System bulk velocity y-component in km/s (Galilean boost applied to star+planet initial velocities)",
+    )
     
     @field_validator('a_planet_AU')
     @classmethod
@@ -158,6 +196,23 @@ class NumericalConfig(BaseModel):
     )
 
 
+class SelectionObjectiveConfig(BaseModel):
+    """Single objective descriptor for Pareto/weighted candidate selection."""
+
+    metric: SelectionMetric = Field(
+        default="delta_v",
+        description="Objective metric name (supports legacy aliases)",
+    )
+    sign: SelectionSign = Field(
+        default="maximize",
+        description="Optimization direction for this objective",
+    )
+    weight: float = Field(
+        default=1.0, gt=0.0,
+        description="Relative objective weight (used by weighted mode and Pareto tie-break)",
+    )
+
+
 class PipelineConfig(BaseModel):
     """Monte Carlo pipeline configuration."""
     
@@ -169,8 +224,15 @@ class PipelineConfig(BaseModel):
             "n_eval_best": 0,
             "top_frac": 0.10,
             "min_top": 1,
+            "select_mode": "single",
             "select_metric": "bary_delta_v_pct",
             "select_sign": "maximize",
+            "selection_objectives": [
+                {"metric": "bary_delta_v", "sign": "maximize", "weight": 1.0},
+                {"metric": "delta_v_vec", "sign": "maximize", "weight": 1.0},
+                {"metric": "energy_from_planet_orbit", "sign": "maximize", "weight": 1.0},
+            ],
+            "weighted_normalization": "minmax",
             "n_parallel": None,
         }
     })
@@ -182,18 +244,41 @@ class PipelineConfig(BaseModel):
     top_frac: float = Field(default=0.10, ge=0.01, le=1.0, description="Fraction of successful cases to re-run")
     min_top: int = Field(default=1, ge=1, description="Minimum number of top candidates")
     
-    # Selection metric
-    select_metric: Literal["planet_delta_v", "bary_delta_v", "bary_delta_v_pct", "bary_delta_v_abs"] = Field(
-        default="bary_delta_v_pct",
-        description="Metric to optimize when selecting candidates"
+    # Selection mode + objectives
+    select_mode: Literal["single", "pareto", "weighted"] = Field(
+        default="single",
+        description="Candidate selection strategy: single-objective, Pareto front, or weighted multi-objective",
     )
-    select_sign: Literal["maximize", "minimize", "abs"] = Field(
+    select_metric: SelectionMetric = Field(
+        default="bary_delta_v_pct",
+        description="Single-mode objective metric (also supports legacy alias names)",
+    )
+    select_sign: SelectionSign = Field(
         default="maximize",
-        description="Optimization direction: maximize, minimize, or abs (largest absolute value)"
+        description="Single-mode optimization direction: maximize, minimize, or abs",
+    )
+    selection_objectives: List[SelectionObjectiveConfig] = Field(
+        default_factory=lambda: [
+            SelectionObjectiveConfig(metric="bary_delta_v", sign="maximize", weight=1.0),
+            SelectionObjectiveConfig(metric="delta_v_vec", sign="maximize", weight=1.0),
+            SelectionObjectiveConfig(metric="energy_from_planet_orbit", sign="maximize", weight=1.0),
+        ],
+        description="Objectives used by pareto/weighted modes",
+    )
+    weighted_normalization: Literal["minmax", "rank"] = Field(
+        default="minmax",
+        description="Normalization method for weighted-mode scalarization and Pareto tie-breaks",
     )
     
     # Parallelization
     n_parallel: Optional[int] = Field(default=None, ge=1, description="Number of parallel workers (None = auto-detect)")
+
+    @field_validator("selection_objectives")
+    @classmethod
+    def validate_selection_objectives(cls, v: List[SelectionObjectiveConfig]):
+        if len(v) == 0:
+            raise ValueError("selection_objectives must contain at least one objective")
+        return v
 
 
 class VisualizationConfig(BaseModel):
@@ -209,6 +294,9 @@ class VisualizationConfig(BaseModel):
             "animate_comparison": False,
             "figure_dpi": 150,
             "figure_format": "png",
+            "generate_publication_dashboard": True,
+            "generate_candidate_ranking_plot": True,
+            "split_subplot_figures": True,
             "generate_2body_heatmaps": True,
             "generate_scattering_maps": True,
             "generate_poincare_maps": True,
@@ -216,6 +304,17 @@ class VisualizationConfig(BaseModel):
             "heatmap_grid_resolution": 60,
             "heatmap_approach_angles_deg": [0.0, 45.0, 85.0],
             "top_n_overlay": 5,
+            "trajectory_gradient_mode": "hexbin",
+            "trajectory_overlay_lines": True,
+            "trajectory_overlay_line_count": 90,
+            "trajectory_confidence_min_count": 2,
+            "trajectory_energy_norm_mode": "auto",
+            "trajectory_energy_vmin": None,
+            "trajectory_energy_vmax": None,
+            "trajectory_hexbin_gridsize": 150,
+            "trajectory_kde_sigma_bins": 2.0,
+            "trajectory_time_frames": 48,
+            "trajectory_time_export_npz": True,
         }
     })
     
@@ -230,6 +329,20 @@ class VisualizationConfig(BaseModel):
     
     figure_dpi: int = Field(default=150, ge=50, le=600, description="Figure resolution (DPI)")
     figure_format: Literal["png", "pdf", "jpg"] = Field(default="png", description="Diagnostic plot format")
+
+    # Publication diagnostics
+    generate_publication_dashboard: bool = Field(
+        default=True,
+        description="Generate publication-oriented dashboard that summarizes objective evidence",
+    )
+    generate_candidate_ranking_plot: bool = Field(
+        default=True,
+        description="Generate detailed ranking diagnostics for selected re-run candidates",
+    )
+    split_subplot_figures: bool = Field(
+        default=True,
+        description="Also export each subplot panel as an individual image for report-ready records",
+    )
 
     # 2-body diagnostic plot toggles
     generate_2body_heatmaps: bool = Field(
@@ -269,6 +382,66 @@ class VisualizationConfig(BaseModel):
         description="Number of top candidates to overlay on multi-trajectory plot"
     )
 
+    # Trajectory-gradient renderer controls (plotting_twobody.plot_trajectory_tracks)
+    trajectory_gradient_mode: Literal["legacy", "line_overlay", "hexbin", "kde", "time_video"] = Field(
+        default="hexbin",
+        description="Trajectory rendering mode for narrowed trajectory tracks",
+    )
+    trajectory_overlay_lines: bool = Field(
+        default=True,
+        description="Overlay representative trajectory lines on top of gradient fields",
+    )
+    trajectory_overlay_line_count: int = Field(
+        default=90, ge=0, le=2000,
+        description="Maximum number of representative trajectory lines to draw when overlay is enabled",
+    )
+    trajectory_confidence_min_count: int = Field(
+        default=2, ge=0, le=10000,
+        description="Minimum samples per bin before a gradient pixel is considered valid",
+    )
+    trajectory_energy_norm_mode: Literal["auto", "fixed"] = Field(
+        default="auto",
+        description="Energy colormap normalization mode for trajectory/phase gradients",
+    )
+    trajectory_energy_vmin: Optional[float] = Field(
+        default=None,
+        description="Fixed normalization minimum for scattering energy (used when norm_mode='fixed')",
+    )
+    trajectory_energy_vmax: Optional[float] = Field(
+        default=None,
+        description="Fixed normalization maximum for scattering energy (used when norm_mode='fixed')",
+    )
+    trajectory_hexbin_gridsize: int = Field(
+        default=150, ge=20, le=600,
+        description="Hexbin resolution for trajectory gradient when mode='hexbin'",
+    )
+    trajectory_kde_sigma_bins: float = Field(
+        default=2.0, ge=0.1, le=20.0,
+        description="Gaussian smoothing width in bins for mode='kde' or 'time_video'",
+    )
+    trajectory_time_frames: int = Field(
+        default=48, ge=2, le=500,
+        description="Number of frames exported for mode='time_video'",
+    )
+    trajectory_time_export_npz: bool = Field(
+        default=True,
+        description="Export time-evolution NPZ cubes when mode='time_video'",
+    )
+
+    @model_validator(mode="after")
+    def validate_trajectory_energy_norm(self):
+        if self.trajectory_energy_norm_mode == "fixed":
+            if self.trajectory_energy_vmin is None or self.trajectory_energy_vmax is None:
+                raise ValueError(
+                    "trajectory_energy_vmin and trajectory_energy_vmax must be set when "
+                    "trajectory_energy_norm_mode='fixed'"
+                )
+            if self.trajectory_energy_vmax <= self.trajectory_energy_vmin:
+                raise ValueError(
+                    "trajectory_energy_vmax must be greater than trajectory_energy_vmin"
+                )
+        return self
+
 
 class TwoBodyConfig(BaseModel):
     """Two-body encounter scan configuration (consumed by trajectory_tracks.py)."""
@@ -295,7 +468,11 @@ class TwoBodyConfig(BaseModel):
 
     # Approach geometry  [km-kg-s]
     v_approach_kms: float = Field(default=50.0, ge=0.1, description="Approach velocity [km/s]")
-    vstar0_kms: float = Field(default=10.0, ge=0.0, description="Star velocity [km/s]")
+    vstar0_kms: float = Field(
+        default=10.0, ge=0.0,
+        description="Star speed parameter for standalone/fixed 2-body scans [km/s]. "
+                    "In pipeline comparisons, this may be auto-synced to the 3-body initial star speed."
+    )
     r_start_km: float = Field(default=1.0e11, ge=1.0, description="Initial separation [km]")
 
     # Impact-parameter scan  [km]

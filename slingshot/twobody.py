@@ -19,11 +19,22 @@ Unit contract (matches the rest of slingshot/):
 
 import numpy as np
 from dataclasses import dataclass
-from typing import Tuple, Optional, List, Dict, Any
+from typing import Tuple, Optional, List, Dict, Any, Union, Sequence
 import sys
 from pathlib import Path
 
 from .constants import G_KM, M_SUN, M_JUP, R_SUN, R_JUP
+
+StarVelocity = Union[float, Sequence[float]]
+
+
+def _star_velocity_components(vstar0: StarVelocity) -> Tuple[float, float]:
+    """Resolve star velocity input to (vx, vy) with legacy scalar support."""
+    if np.isscalar(vstar0):
+        return 0.0, float(vstar0)
+    if len(vstar0) != 2:
+        raise ValueError(f"Star velocity vector must have 2 components, got {vstar0}")
+    return float(vstar0[0]), float(vstar0[1])
 
 # Import TwoBodyScatter (unit-agnostic closed-form solver)
 try:
@@ -50,7 +61,8 @@ class TwoBodyGeometry:
     vm0: float          # Initial y velocity  [km/s]
 
     # Environment
-    vstar0: float       # Star velocity (y)   [km/s]
+    vstar0: float       # Legacy star velocity y-component [km/s]
+    vstar_vec: Tuple[float, float]  # Full star velocity vector [km/s]
     mu: float           # G·M of scattering body [km³/s²]
 
     # Derived
@@ -131,7 +143,7 @@ class TwoBodyEncounter:
         ym0: float,
         um0: float,
         vm0: float,
-        vstar0: float,
+        vstar0: StarVelocity,
         num_points: int = 400,
     ) -> TrajectoryResult:
         """Compute one hyperbolic encounter.
@@ -140,27 +152,33 @@ class TwoBodyEncounter:
         ----------
         xm0, ym0 : float   Position [km]
         um0, vm0 : float   Velocity [km/s]
-        vstar0   : float   Star velocity (y-component) [km/s]
+        vstar0   : float or (float, float)
+            Star velocity input. Scalar keeps legacy behavior
+            (interpreted as y-component only); tuple/list gives full
+            (vx, vy) in km/s.
         num_points : int    Trajectory sample count.
 
         Returns
         -------
         TrajectoryResult
         """
+        vstar_x, vstar_y = _star_velocity_components(vstar0)
+        vstar_vec = (vstar_x, vstar_y)
+
         _empty = TrajectoryResult(
             x_star=np.array([]), y_star=np.array([]),
             orbital_energy=0.0, deltaV=0.0,
             epsilon=0.0, vinf=0.0, e=0.0, a=0.0,
             geometry=TwoBodyGeometry(
                 xm0=xm0, ym0=ym0, um0=um0, vm0=vm0,
-                vstar0=vstar0, mu=self.mu,
+                vstar0=vstar_y, vstar_vec=vstar_vec, mu=self.mu,
                 impact_parameter=0.0, approach_angle=0.0,
             ),
             valid=False,
         )
 
         try:
-            result = gravity_assist_no_burn(xm0, ym0, um0, vm0, vstar0, self.mu)
+            result = gravity_assist_no_burn(xm0, ym0, um0, vm0, vstar_vec, self.mu)
             eps = result.epsilon
             vinf = result.vinf
             e = result.e
@@ -182,8 +200,8 @@ class TwoBodyEncounter:
             nu = np.linspace(-nu_inf + 0.01, nu_inf - 0.01, num_points)
             r = a * (e * e - 1.0) / (1.0 + e * np.cos(nu))
 
-            vx_s = um0
-            vy_s = vm0 - vstar0
+            vx_s = um0 - vstar_x
+            vy_s = vm0 - vstar_y
             v_mag = np.hypot(vx_s, vy_s)
             if v_mag == 0:
                 return _empty
@@ -210,7 +228,7 @@ class TwoBodyEncounter:
                 umF=result.umF, vmF=result.vmF,
                 geometry=TwoBodyGeometry(
                     xm0=xm0, ym0=ym0, um0=um0, vm0=vm0,
-                    vstar0=vstar0, mu=self.mu,
+                    vstar0=vstar_y, vstar_vec=vstar_vec, mu=self.mu,
                     impact_parameter=b_mag, approach_angle=angle,
                 ),
                 valid=True,
@@ -224,7 +242,7 @@ class TwoBodyEncounter:
     def scan_parameter_space(
         self,
         v_approach: float,
-        vstar0: float,
+        vstar0: StarVelocity,
         r_start: float,
         b_values: np.ndarray,
         angle_values: np.ndarray,
@@ -241,6 +259,8 @@ class TwoBodyEncounter:
         trajectories: List[TrajectoryResult] = []
         energy_values: List[float] = []
         parameter_grid: List[Tuple[float, float]] = []
+        vstar_x, vstar_y = _star_velocity_components(vstar0)
+        vstar_vec = (vstar_x, vstar_y)
 
         total = len(b_values) * len(angle_values)
         print(f"[{self.label}] Scanning {len(b_values)} × {len(angle_values)} = {total} encounters …")
@@ -254,10 +274,10 @@ class TwoBodyEncounter:
                 perp = angle + np.pi / 2
                 xm0 = -vx / v_approach * r_start + b_mag * np.cos(perp)
                 ym0 = -vy / v_approach * r_start + b_mag * np.sin(perp)
-                um0 = vx
-                vm0 = vy + vstar0
+                um0 = vx + vstar_x
+                vm0 = vy + vstar_y
 
-                traj = self.compute_trajectory(xm0, ym0, um0, vm0, vstar0, num_points)
+                traj = self.compute_trajectory(xm0, ym0, um0, vm0, vstar_vec, num_points)
                 if traj.valid:
                     trajectories.append(traj)
                     energy_values.append(traj.orbital_energy)

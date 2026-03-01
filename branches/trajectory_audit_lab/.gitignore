@@ -1,0 +1,17 @@
+﻿# Keep branch-local generated files out of version control by default.
+
+# Generated notebooks/checkpoints
+notebooks/.ipynb_checkpoints/
+
+# Generated audit artifacts
+audits/generated/
+audits/tmp/
+audits/history/
+
+# Temporary test outputs
+tests/tmp/
+tests/artifacts/
+
+# Python caches
+**/__pycache__/
+*.pyc

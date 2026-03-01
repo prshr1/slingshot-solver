@@ -183,9 +183,11 @@ def monopole_ode(
     t: float,
     Y: np.ndarray,
     M_tot: float,
+    r_center0: np.ndarray,
+    v_center: np.ndarray,
 ) -> np.ndarray:
     """
-    2-body ODE with point mass M_tot at origin.
+    2-body ODE with point mass M_tot at a center that can drift linearly.
     
     Parameters
     ----------
@@ -195,6 +197,10 @@ def monopole_ode(
         State [x, y, vx, vy]
     M_tot : float
         Total mass (kg)
+    r_center0 : np.ndarray
+        Center position at t=0 (km), shape (2,).
+    v_center : np.ndarray
+        Constant center velocity (km/s), shape (2,).
     
     Returns
     -------
@@ -202,11 +208,15 @@ def monopole_ode(
         State derivative [vx, vy, ax, ay]
     """
     x, y, vx, vy = Y
-    r2 = x * x + y * y
+    xc = r_center0[0] + v_center[0] * t
+    yc = r_center0[1] + v_center[1] * t
+    dx = x - xc
+    dy = y - yc
+    r2 = dx * dx + dy * dy
     r = np.sqrt(r2)
     r3 = r2 * r
-    ax = -G * M_tot * x / r3
-    ay = -G * M_tot * y / r3
+    ax = -G * M_tot * dx / r3
+    ay = -G * M_tot * dy / r3
     return np.array([vx, vy, ax, ay])
 
 
@@ -216,6 +226,8 @@ def simulate_monopole_baseline(
     t_in: float,
     t_out: float,
     M_tot: float,
+    r_center0: Optional[np.ndarray] = None,
+    v_center: Optional[np.ndarray] = None,
     rtol: float = 1e-10,
     atol: float = 1e-10,
 ) -> Tuple[Optional[object], Optional[np.ndarray], Optional[np.ndarray]]:
@@ -232,6 +244,10 @@ def simulate_monopole_baseline(
         Time range (s)
     M_tot : float
         Total mass (kg)
+    r_center0 : np.ndarray, optional
+        Monopole-center position at t=0 (km). Default [0, 0].
+    v_center : np.ndarray, optional
+        Constant monopole-center velocity (km/s). Default [0, 0].
     rtol, atol : float
         Tolerances
     
@@ -241,6 +257,12 @@ def simulate_monopole_baseline(
         Solution object, final position, final velocity. Returns (None, None, None) if failed.
     """
     dt = t_out - t_in
+    if r_center0 is None:
+        r_center0 = np.array([0.0, 0.0], dtype=float)
+    if v_center is None:
+        v_center = np.array([0.0, 0.0], dtype=float)
+    r_center0 = np.asarray(r_center0, dtype=float)
+    v_center = np.asarray(v_center, dtype=float)
     Y0 = np.array([r_in[0], r_in[1], v_in[0], v_in[1]], dtype=float)
     
     try:
@@ -248,7 +270,7 @@ def simulate_monopole_baseline(
             monopole_ode,
             (0.0, dt),
             Y0,
-            args=(M_tot,),
+            args=(M_tot, r_center0, v_center),
             rtol=rtol,
             atol=atol,
             dense_output=False,
@@ -336,32 +358,73 @@ def compare_3body_with_baselines(
     """
     if not enc.ok:
         return {"ok": False, "reason": "invalid_encounter"}
+    if enc.i0 is None or enc.i1 is None:
+        return {"ok": False, "reason": "missing_encounter_indices"}
     
     M_tot = m_star + m_p
     mu_p = G * m_p
+    y_all = sol.y
+    i0, i1 = int(enc.i0), int(enc.i1)
+
+    # COM state at encounter entry/exit (includes optional bulk drift).
+    xs_i, ys_i = y_all[0, i0], y_all[1, i0]
+    vxs_i, vys_i = y_all[2, i0], y_all[3, i0]
+    xp_i, yp_i = y_all[4, i0], y_all[5, i0]
+    vxp_i, vyp_i = y_all[6, i0], y_all[7, i0]
+    xs_f, ys_f = y_all[0, i1], y_all[1, i1]
+    xp_f, yp_f = y_all[4, i1], y_all[5, i1]
+    vxs_f, vys_f = y_all[2, i1], y_all[3, i1]
+    vxp_f, vyp_f = y_all[6, i1], y_all[7, i1]
+
+    r_com_in = np.array([
+        (m_star * xs_i + m_p * xp_i) / M_tot,
+        (m_star * ys_i + m_p * yp_i) / M_tot,
+    ])
+    v_com_in = np.array([
+        (m_star * vxs_i + m_p * vxp_i) / M_tot,
+        (m_star * vys_i + m_p * vyp_i) / M_tot,
+    ])
+    r_com_out = np.array([
+        (m_star * xs_f + m_p * xp_f) / M_tot,
+        (m_star * ys_f + m_p * yp_f) / M_tot,
+    ])
+    v_com_out = np.array([
+        (m_star * vxs_f + m_p * vxp_f) / M_tot,
+        (m_star * vys_f + m_p * vyp_f) / M_tot,
+    ])
     
     # 2-body hyperbola
     two_body = two_body_hyperbola_from_state(enc.r_rel_i, enc.v_rel_i, mu_p)
     
-    # Monopole baseline
+    # Monopole baseline (moving COM center, not fixed origin)
     sol_mono, r_out_mono, v_out_mono = simulate_monopole_baseline(
         enc.r_in_bary, enc.v_in_bary,
         enc.t_in, enc.t_out,
         M_tot,
+        r_center0=r_com_in,
+        v_center=v_com_in,
     )
     
     if sol_mono is None:
         return {"ok": False, "reason": "monopole_integration_failed"}
     
-    # Energy and angular momentum
-    eps_in, h_in = energy_and_angmom(enc.r_in_bary, enc.v_in_bary, M_tot)
-    eps_3b, h_3b = energy_and_angmom(enc.r_out_bary, enc.v_out_bary, M_tot)
-    eps_0, h_0 = energy_and_angmom(r_out_mono, v_out_mono, M_tot)
+    # Energy and angular momentum in COM-relative coordinates.
+    dt = float(enc.t_out - enc.t_in)
+    r_com_out_lin = r_com_in + v_com_in * dt
+    r_in_rel = enc.r_in_bary - r_com_in
+    v_in_rel = enc.v_in_bary - v_com_in
+    r_out_3b_rel = enc.r_out_bary - r_com_out
+    v_out_3b_rel = enc.v_out_bary - v_com_out
+    r_out_0_rel = r_out_mono - r_com_out_lin
+    v_out_0_rel = v_out_mono - v_com_in
+
+    eps_in, h_in = energy_and_angmom(r_in_rel, v_in_rel, M_tot)
+    eps_3b, h_3b = energy_and_angmom(r_out_3b_rel, v_out_3b_rel, M_tot)
+    eps_0, h_0 = energy_and_angmom(r_out_0_rel, v_out_0_rel, M_tot)
     
-    # Calculate deflection angle for 3-body encounter
-    # Extract velocity components from velocity vectors (handle 2D and 3D)
-    v_in_2d = enc.v_in_bary[:2] if len(enc.v_in_bary) >= 2 else enc.v_in_bary
-    v_out_2d = enc.v_out_bary[:2] if len(enc.v_out_bary) >= 2 else enc.v_out_bary
+    # Deflection angle in COM frame for boost-invariant parity.
+    v_in_2d = v_in_rel[:2] if len(v_in_rel) >= 2 else v_in_rel
+    v_out_2d = v_out_3b_rel[:2] if len(v_out_3b_rel) >= 2 else v_out_3b_rel
     
     vx_i, vy_i = float(v_in_2d[0]), float(v_in_2d[1])
     vx_f, vy_f = float(v_out_2d[0]), float(v_out_2d[1])
@@ -387,6 +450,10 @@ def compare_3body_with_baselines(
         "ok": True,
         "two_body": two_body,
         "encounter": enc,
+        "com_r_in": r_com_in,
+        "com_v_in": v_com_in,
+        "com_r_out": r_com_out,
+        "com_v_out": v_com_out,
         "bary_eps_in": eps_in,
         "bary_eps_3b": eps_3b,
         "bary_eps_0": eps_0,
@@ -433,7 +500,9 @@ def compare_3body_with_baselines(
             
             if plot_save_dir:
                 fig.savefig(f"{plot_save_dir}/planet_frame_comparison.png", dpi=150)
-            plt.show()
+                plt.close(fig)
+            else:
+                plt.show()
         
         # Barycentric comparison
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -441,8 +510,11 @@ def compare_3body_with_baselines(
         ysat_3b = sol.y[9]
         x_star = sol.y[0]
         y_star = sol.y[1]
-        xsat_0 = sol_mono.y[0]
-        ysat_0 = sol_mono.y[1]
+        t_mono = sol_mono.t
+        x_com_path = r_com_in[0] + v_com_in[0] * t_mono
+        y_com_path = r_com_in[1] + v_com_in[1] * t_mono
+        xsat_0 = sol_mono.y[0] + x_com_path
+        ysat_0 = sol_mono.y[1] + y_com_path
         
         ax.plot(x_star, y_star, label="Star trajectory", linewidth=1, alpha=0.6)
         ax.plot(xsat_3b, ysat_3b, label="3-body trajectory", linewidth=2, alpha=0.8)
@@ -457,6 +529,8 @@ def compare_3body_with_baselines(
         
         if plot_save_dir:
             fig.savefig(f"{plot_save_dir}/barycentric_comparison.png", dpi=150)
-        plt.show()
+            plt.close(fig)
+        else:
+            plt.show()
     
     return result

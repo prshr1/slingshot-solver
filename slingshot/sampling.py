@@ -4,7 +4,7 @@ Supports barycentric parametric (hyperbolic) and planet-relative sampling modes.
 """
 
 import numpy as np
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any, Union
 
 from .constants import AU_KM, R_JUP
 
@@ -20,7 +20,8 @@ def sample_satellite_state_barycentric(
     angle_in_max_deg: float = 60.0,
     r_init_AU: Optional[float] = None,
     rng: Optional[np.random.Generator] = None,
-) -> np.ndarray:
+    return_metadata: bool = False,
+) -> Union[np.ndarray, Tuple[np.ndarray, Dict[str, np.ndarray]]]:
     """
     Sample N satellite states in barycentric frame using parametric hyperbolic encounter model.
     
@@ -67,6 +68,11 @@ def sample_satellite_state_barycentric(
     impact_param_max_km = impact_param_max_AU * AU_KM
     
     samples = np.zeros((N, 4))
+    v_mag_arr = np.zeros(N, dtype=float)
+    impact_param_AU_arr = np.zeros(N, dtype=float)
+    angle_in_deg_arr = np.zeros(N, dtype=float)
+    azimuth_deg_arr = np.zeros(N, dtype=float)
+    r_init_AU_arr = np.zeros(N, dtype=float)
     
     for i in range(N):
         # Sample independent variables
@@ -83,8 +89,10 @@ def sample_satellite_state_barycentric(
         # Use explicit r_init_AU if provided, otherwise 2× impact_param.
         if r_init_AU is not None:
             r_init = r_init_AU * AU_KM
+            r_init_au_val = float(r_init_AU)
         else:
             r_init = 2.0 * impact_param
+            r_init_au_val = float(r_init / AU_KM)
         
         # Local coordinates: x = radial inward, y = impact parameter direction
         x_local = -r_init  # approaching from negative side
@@ -104,7 +112,22 @@ def sample_satellite_state_barycentric(
         vy3 = vx_local * sin_az + vy_local * cos_az
         
         samples[i] = [x3, y3, vx3, vy3]
-    
+        v_mag_arr[i] = float(v_mag)
+        impact_param_AU_arr[i] = float(impact_param / AU_KM)
+        angle_in_deg_arr[i] = float(angle_in_deg)
+        azimuth_deg_arr[i] = float(np.degrees(azimuth))
+        r_init_AU_arr[i] = r_init_au_val
+
+    if return_metadata:
+        metadata = {
+            "v_mag_kms": v_mag_arr,
+            "impact_param_AU": impact_param_AU_arr,
+            "angle_in_deg": angle_in_deg_arr,
+            "azimuth_deg": azimuth_deg_arr,
+            "r_init_AU": r_init_AU_arr,
+        }
+        return samples, metadata
+
     return samples
 
 
@@ -117,7 +140,8 @@ def sample_satellite_state_near_planet(
     v_rel_min: Optional[float] = None,
     v_rel_max: Optional[float] = None,
     rng: Optional[np.random.Generator] = None,
-) -> np.ndarray:
+    return_metadata: bool = False,
+) -> Union[np.ndarray, Tuple[np.ndarray, Dict[str, np.ndarray]]]:
     """
     Sample N satellite states around the planet at t=0.
     Uses planet-relative (Cartesian) coordinates.
@@ -162,6 +186,10 @@ def sample_satellite_state_near_planet(
     xs, ys, vxs, vys, xp, yp, vxp, vyp = Y_sp0
     
     samples = np.zeros((N, 4))
+    r0_Rp_arr = np.zeros(N, dtype=float)
+    v_rel_kms_arr = np.zeros(N, dtype=float)
+    alpha_deg_arr = np.zeros(N, dtype=float)
+    theta_deg_arr = np.zeros(N, dtype=float)
     
     for i in range(N):
         # Radius from planet center
@@ -197,5 +225,18 @@ def sample_satellite_state_near_planet(
         vy3 = vyp + v_rel[1]
         
         samples[i] = [x3, y3, vx3, vy3]
-    
+        r0_Rp_arr[i] = float(r0 / R_p)
+        v_rel_kms_arr[i] = float(v_rel_mag)
+        alpha_deg_arr[i] = float(np.degrees(alpha))
+        theta_deg_arr[i] = float(np.degrees(theta))
+
+    if return_metadata:
+        metadata = {
+            "r0_Rp": r0_Rp_arr,
+            "v_rel_kms": v_rel_kms_arr,
+            "alpha_deg": alpha_deg_arr,
+            "theta_deg": theta_deg_arr,
+        }
+        return samples, metadata
+
     return samples

@@ -4,13 +4,174 @@ Handles both barycentric and planet-frame sampling/analysis.
 """
 
 import numpy as np
-from typing import Optional, Dict, Any, List, Tuple
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+from typing import Optional, Dict, Any, List, Tuple, Sequence
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from .dynamics import init_hot_jupiter_barycentric, simulate_3body
 from .analysis import analyze_trajectory
 from .sampling import sample_satellite_state_barycentric, sample_satellite_state_near_planet
 from .constants import M_SUN, M_JUP, R_JUP, R_SUN
+
+
+_METRIC_ALIASES = {
+    # Legacy aliases used by historical configs
+    "bary_delta_v": "delta_v",
+    "bary_delta_v_pct": "delta_v_pct",
+    "bary_delta_v_abs": "delta_v_abs",
+    "planet_delta_v": "delta_v_planet_frame",
+    # Canonical shorthand aliases
+    "dv": "delta_v",
+    "dv_pct": "delta_v_pct",
+    "dv_vec": "delta_v_vec",
+    "half_dv_vec_sq": "energy_half_dv_vec_sq",
+}
+
+
+def _resolve_metric_name(metric: str) -> str:
+    """Resolve user/config metric names to canonical MC array keys."""
+    key = str(metric).strip().lower()
+    return _METRIC_ALIASES.get(key, key)
+
+
+def resolve_metric_array(mc: Dict[str, Any], metric: str) -> np.ndarray:
+    """Return a full-length metric array from MC results (derived if needed)."""
+    canonical = _resolve_metric_name(metric)
+
+    if canonical in mc:
+        return np.asarray(mc[canonical], dtype=float)
+
+    if canonical == "delta_v_abs":
+        return np.abs(np.asarray(mc["delta_v"], dtype=float))
+    if canonical == "deflection_abs":
+        return np.abs(np.asarray(mc["deflection"], dtype=float))
+
+    raise KeyError(
+        f"Unknown metric '{metric}' (canonical '{canonical}'). "
+        f"Available keys: {sorted(k for k in mc.keys() if isinstance(mc[k], np.ndarray))}"
+    )
+
+
+def _apply_objective_sign(vals: np.ndarray, sign: str) -> np.ndarray:
+    """Transform objective values so higher is always better."""
+    s = str(sign).strip().lower()
+    if s == "maximize":
+        return vals
+    if s == "minimize":
+        return -vals
+    if s == "abs":
+        return np.abs(vals)
+    raise ValueError(f"Unknown objective sign: {sign}. Use maximize|minimize|abs")
+
+
+def _compute_n_top(n_valid: int, top_frac: float, min_top: int) -> int:
+    if n_valid <= 0:
+        return 0
+    return max(min_top, int(np.ceil(top_frac * n_valid)))
+
+
+def _weighted_scores_from_transformed(
+    transformed: np.ndarray,
+    weights: Optional[np.ndarray] = None,
+    normalization: str = "minmax",
+) -> np.ndarray:
+    """Compute weighted scalar scores from transformed objective matrix."""
+    if transformed.ndim != 2:
+        raise ValueError("Expected transformed objective matrix with shape [N, M]")
+
+    if weights is None:
+        w = np.ones(transformed.shape[1], dtype=float)
+    else:
+        w = np.asarray(weights, dtype=float)
+    if w.size != transformed.shape[1]:
+        raise ValueError("weights length must match number of objectives")
+    if np.any(w < 0):
+        raise ValueError("weights must be non-negative")
+    if np.sum(w) <= 0:
+        w = np.ones_like(w)
+
+    mode = str(normalization).strip().lower()
+    if mode == "minmax":
+        vmin = np.min(transformed, axis=0)
+        vmax = np.max(transformed, axis=0)
+        span = vmax - vmin
+        norm = np.zeros_like(transformed)
+        nz = span > 0
+        norm[:, nz] = (transformed[:, nz] - vmin[nz]) / span[nz]
+        # Constant objectives carry no ranking power -> neutral midpoint.
+        norm[:, ~nz] = 0.5
+    elif mode == "rank":
+        # Rank-normalize each objective to [0,1].
+        norm = np.zeros_like(transformed)
+        n = transformed.shape[0]
+        if n == 1:
+            norm[:] = 1.0
+        else:
+            for j in range(transformed.shape[1]):
+                order = np.argsort(transformed[:, j])
+                r = np.empty_like(order, dtype=float)
+                r[order] = np.arange(n, dtype=float)
+                norm[:, j] = r / (n - 1)
+    else:
+        raise ValueError(f"Unknown weighted normalization: {normalization}")
+
+    return (norm @ w) / np.sum(w)
+
+
+def _prepare_objective_matrix(
+    mc: Dict[str, Any],
+    objectives: Sequence[Dict[str, Any]],
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build objective matrix for successful particles.
+
+    Returns
+    -------
+    tuple
+        ok_idx_valid, transformed_values, weights
+    """
+    ok_idx_all = np.where(mc["ok"])[0]
+    if ok_idx_all.size == 0:
+        return (
+            np.array([], dtype=int),
+            np.empty((0, 0), dtype=float),
+            np.array([], dtype=float),
+        )
+
+    cols: List[np.ndarray] = []
+    weights: List[float] = []
+
+    for obj in objectives:
+        metric = obj.get("metric", "delta_v")
+        sign = obj.get("sign", "maximize")
+        weight = float(obj.get("weight", 1.0))
+        vals = resolve_metric_array(mc, metric)[ok_idx_all]
+        cols.append(_apply_objective_sign(vals, sign))
+        weights.append(weight)
+
+    transformed = np.column_stack(cols) if cols else np.empty((ok_idx_all.size, 0), dtype=float)
+
+    if transformed.size == 0:
+        return (
+            np.array([], dtype=int),
+            np.empty((0, 0), dtype=float),
+            np.array([], dtype=float),
+        )
+
+    finite_mask = np.all(np.isfinite(transformed), axis=1)
+    return ok_idx_all[finite_mask], transformed[finite_mask], np.asarray(weights, dtype=float)
+
+
+def _pareto_front_mask(values: np.ndarray) -> np.ndarray:
+    """Return mask of non-dominated points for max-oriented objectives."""
+    n = values.shape[0]
+    keep = np.ones(n, dtype=bool)
+    for i in range(n):
+        if not keep[i]:
+            continue
+        dominates_i = np.all(values >= values[i], axis=1) & np.any(values > values[i], axis=1)
+        dominates_i[i] = False
+        if np.any(dominates_i):
+            keep[i] = False
+    return keep
 
 
 def evaluate_particle(
@@ -243,8 +404,18 @@ def run_monte_carlo(
     if verbose:
         print(f"Monte Carlo: {N} particles, {frame} frame, {sampling_mode} sampling")
     
-    # Initialize star+planet system
-    Y_sp0 = init_hot_jupiter_barycentric(m_star=m_star, m_p=m_p)
+    # Initialize star+planet system (optionally with system bulk velocity)
+    bulk_vx = sampling_kwargs.get('bulk_velocity_vx_kms', 0.0)
+    bulk_vy = sampling_kwargs.get('bulk_velocity_vy_kms', 0.0)
+    Y_sp0 = init_hot_jupiter_barycentric(
+        m_star=m_star,
+        m_p=m_p,
+        bulk_velocity_vx_kms=bulk_vx,
+        bulk_velocity_vy_kms=bulk_vy,
+    )
+    if verbose and (bulk_vx != 0.0 or bulk_vy != 0.0):
+        v_bulk = np.hypot(bulk_vx, bulk_vy)
+        print(f"  System bulk velocity: ({bulk_vx:.2f}, {bulk_vy:.2f}) km/s |v|={v_bulk:.2f} km/s")
 
     # Compute Hill sphere and flyby distance threshold
     xs, ys = Y_sp0[0], Y_sp0[1]
@@ -272,8 +443,9 @@ def run_monte_carlo(
                   f"({star_min_clearance_km:.0f} km)")
 
     # Sample satellite states
+    sampling_params: Dict[str, np.ndarray] = {}
     if sampling_mode == "barycentric":
-        sat_states = sample_satellite_state_barycentric(
+        sat_states, sampling_params = sample_satellite_state_barycentric(
             Y_sp0, N=N,
             v_mag_min=sampling_kwargs.get('v_mag_min', 10.0),
             v_mag_max=sampling_kwargs.get('v_mag_max', 120.0),
@@ -283,9 +455,10 @@ def run_monte_carlo(
             angle_in_max_deg=sampling_kwargs.get('angle_in_max_deg', 60.0),
             r_init_AU=sampling_kwargs.get('r_init_AU', None),
             rng=rng,
+            return_metadata=True,
         )
     elif sampling_mode == "planet":
-        sat_states = sample_satellite_state_near_planet(
+        sat_states, sampling_params = sample_satellite_state_near_planet(
             Y_sp0, N=N,
             R_p=R_p,
             r_min_factor=sampling_kwargs.get('r_min_factor', 20.0),
@@ -293,6 +466,7 @@ def run_monte_carlo(
             v_rel_min=sampling_kwargs.get('v_rel_min', 12.0),
             v_rel_max=sampling_kwargs.get('v_rel_max', 80.0),
             rng=rng,
+            return_metadata=True,
         )
     else:
         raise ValueError(f"Unknown sampling mode: {sampling_mode}")
@@ -347,6 +521,9 @@ def run_monte_carlo(
     delta_v_vec = np.full(N, np.nan)
     energy_half_dv_vec_sq = np.full(N, np.nan)
     r_star_min_arr = np.full(N, np.nan)
+    delta_v_pct = np.full(N, np.nan)
+    delta_v_planet_frame = np.full(N, np.nan)
+    energy_from_planet_orbit = np.full(N, np.nan)
     
     for result in results_list:
         idx = result["idx"]
@@ -362,9 +539,12 @@ def run_monte_carlo(
         if result["ok"] and result["analysis"]:
             ana = result["analysis"]
             delta_v[idx] = ana["delta_v"]
+            delta_v_pct[idx] = ana.get("delta_v_pct", np.nan)
             deflection[idx] = ana["deflection"]
             delta_v_vec[idx] = ana.get("delta_v_vec", np.nan)
             energy_half_dv_vec_sq[idx] = ana.get("energy_half_dv_vec_sq", np.nan)
+            delta_v_planet_frame[idx] = ana.get("delta_v_planet_frame", np.nan)
+            energy_from_planet_orbit[idx] = ana.get("energy_from_planet_orbit", np.nan)
     
     ok_count = ok_flags.sum()
     if verbose:
@@ -375,10 +555,13 @@ def run_monte_carlo(
         "sat_states": sat_states,
         "ok": ok_flags,
         "delta_v": delta_v,
+        "delta_v_pct": delta_v_pct,
         "deflection": deflection,
         "r_min": r_min_arr,
         "delta_v_vec": delta_v_vec,
         "energy_half_dv_vec_sq": energy_half_dv_vec_sq,
+        "delta_v_planet_frame": delta_v_planet_frame,
+        "energy_from_planet_orbit": energy_from_planet_orbit,
         "r_star_min": r_star_min_arr,
         "results": results_list,
         "m_star": m_star,
@@ -387,6 +570,7 @@ def run_monte_carlo(
         "r_hill": r_hill,
         "frame": frame,
         "sampling_mode": sampling_mode,
+        "sampling_params": sampling_params,
     }
 
 
@@ -418,26 +602,97 @@ def select_top_indices(
     np.ndarray
         Indices of selected particles
     """
-    ok = mc["ok"]
-    ok_idx = np.where(ok)[0]
-    
+    ok_idx_all = np.where(mc["ok"])[0]
+    if ok_idx_all.size == 0:
+        return np.array([], dtype=int)
+
+    metric_vals_all = resolve_metric_array(mc, metric)[ok_idx_all]
+    finite_mask = np.isfinite(metric_vals_all)
+    ok_idx = ok_idx_all[finite_mask]
+    metric_vals = metric_vals_all[finite_mask]
+
     if ok_idx.size == 0:
         return np.array([], dtype=int)
-    
-    # Get metric values
-    metric_vals = mc[metric][ok_idx]
-    
-    # Sort
-    if sign == "maximize":
+
+    s = str(sign).strip().lower()
+    if s == "maximize":
         order = np.argsort(metric_vals)[::-1]
-    elif sign == "minimize":
+    elif s == "minimize":
         order = np.argsort(metric_vals)
-    elif sign == "abs":
+    elif s == "abs":
         order = np.argsort(np.abs(metric_vals))[::-1]
     else:
-        order = np.argsort(metric_vals)[::-1]
-    
-    n_top = max(min_top, int(np.ceil(top_frac * ok_idx.size)))
+        raise ValueError(f"Unknown sign: {sign}. Use maximize|minimize|abs")
+
+    n_top = _compute_n_top(ok_idx.size, top_frac, min_top)
     top_local = order[:n_top]
-    
     return ok_idx[top_local]
+
+
+def select_weighted_indices(
+    mc: Dict[str, Any],
+    objectives: Sequence[Dict[str, Any]],
+    top_frac: float = 0.10,
+    min_top: int = 1,
+    normalization: str = "minmax",
+) -> np.ndarray:
+    """Select candidates by weighted normalized objective score."""
+    ok_idx, transformed, weights = _prepare_objective_matrix(mc, objectives)
+    if ok_idx.size == 0:
+        return np.array([], dtype=int)
+
+    n_top = _compute_n_top(ok_idx.size, top_frac, min_top)
+    scores = _weighted_scores_from_transformed(
+        transformed, weights=weights, normalization=normalization
+    )
+    order = np.argsort(scores)[::-1]
+    return ok_idx[order[:n_top]]
+
+
+def select_pareto_indices(
+    mc: Dict[str, Any],
+    objectives: Sequence[Dict[str, Any]],
+    top_frac: float = 0.10,
+    min_top: int = 1,
+    tie_break_normalization: str = "minmax",
+) -> np.ndarray:
+    """Select candidates via Pareto non-dominated sorting.
+
+    Notes
+    -----
+    Objectives are transformed so "higher is better" before sorting.
+    If the final accepted front exceeds the target size, a weighted
+    normalized scalar score is used as deterministic tie-break.
+    """
+    ok_idx, transformed, weights = _prepare_objective_matrix(mc, objectives)
+    if ok_idx.size == 0:
+        return np.array([], dtype=int)
+
+    n_top = _compute_n_top(ok_idx.size, top_frac, min_top)
+    if n_top >= ok_idx.size:
+        return ok_idx
+
+    selected_local: List[int] = []
+    remaining_local = np.arange(ok_idx.size, dtype=int)
+
+    while remaining_local.size > 0 and len(selected_local) < n_top:
+        vals = transformed[remaining_local]
+        front_mask = _pareto_front_mask(vals)
+        front_local = remaining_local[front_mask]
+
+        needed = n_top - len(selected_local)
+        if front_local.size <= needed:
+            selected_local.extend(front_local.tolist())
+            remaining_local = remaining_local[~front_mask]
+            continue
+
+        front_scores = _weighted_scores_from_transformed(
+            transformed[front_local],
+            weights=weights,
+            normalization=tie_break_normalization,
+        )
+        front_order = np.argsort(front_scores)[::-1]
+        selected_local.extend(front_local[front_order[:needed]].tolist())
+        break
+
+    return ok_idx[np.asarray(selected_local, dtype=int)]

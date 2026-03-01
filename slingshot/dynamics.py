@@ -16,6 +16,8 @@ def init_hot_jupiter_barycentric(
     m_p: Optional[float] = None,
     phase: float = 0.0,
     prograde: bool = True,
+    bulk_velocity_vx_kms: float = 0.0,
+    bulk_velocity_vy_kms: float = 0.0,
 ) -> np.ndarray:
     """
     Generate barycentric initial conditions for star+planet 2-body system
@@ -33,6 +35,12 @@ def init_hot_jupiter_barycentric(
         Orbital phase (radians). Default 0.0 (planet at +x).
     prograde : bool
         If True, orbit is counter-clockwise. If False, clockwise.
+    bulk_velocity_vx_kms : float
+        Uniform system bulk velocity x-component (km/s) added to both
+        star and planet.
+    bulk_velocity_vy_kms : float
+        Uniform system bulk velocity y-component (km/s) added to both
+        star and planet.
     
     Returns
     -------
@@ -74,6 +82,12 @@ def init_hot_jupiter_barycentric(
     vys = -f_star * vy_rel
     vxp = f_plan * vx_rel
     vyp = f_plan * vy_rel
+
+    # Optional Galilean boost for moving star systems
+    vxs += bulk_velocity_vx_kms
+    vys += bulk_velocity_vy_kms
+    vxp += bulk_velocity_vx_kms
+    vyp += bulk_velocity_vy_kms
     
     return np.array([xs, ys, vxs, vys, xp, yp, vxp, vyp], dtype=float)
 

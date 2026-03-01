@@ -25,18 +25,20 @@ system:
   R_planet_Rjup: 1.155
   R_star_Rsun: 4.06
   a_planet_AU: 0.0896
+  bulk_velocity_vx_kms: 10.0
+  bulk_velocity_vy_kms: 0.0
 
 sampling:
   mode: "barycentric"
 
   # Velocity range — covers realistic interstellar objects
   # ('Oumuamua ≈ 26 km/s, Borisov ≈ 32 km/s at ∞)
-  v_mag_min_kms: 15.0
-  v_mag_max_kms: 150.0
+  v_mag_min_kms: 20.0
+  v_mag_max_kms: 125.0
 
   # Impact parameters tightly bracketing the planet's orbit
-  impact_param_min_AU: 0.03
-  impact_param_max_AU: 0.25
+  impact_param_min_AU: 0.08
+  impact_param_max_AU: 0.14
 
   # Wide angular coverage for diverse planet-frame approach speeds
   angle_in_min_deg: -90.0
@@ -47,7 +49,7 @@ sampling:
   # Useful when you want consistent integration baselines regardless of b.
   # Omit or set to null to keep the default adaptive behaviour.
   
-  r_init_AU: 3
+  r_init_AU: 2.0
 
   # Planet-frame mode parameters (alternative, unused here)
   r_min_factor: 10
@@ -74,14 +76,26 @@ numerical:
   star_min_clearance_Rstar: 2.0
 
 pipeline:
-  N_particles: 3000
+  N_particles: 1000
   t_mc_max_sec: 5e7
   t_best_max_sec: 5e7
   n_eval_best: 0
   top_frac: 0.10
   min_top: 5
+  select_mode: "single"         # "single" | "pareto" | "weighted"
   select_metric: "bary_delta_v"   # Raw scalar ΔV, not percentage
   select_sign: "maximize"
+  selection_objectives:         # used by pareto/weighted modes
+    - metric: "bary_delta_v"
+      sign: "maximize"
+      weight: 1.0
+    - metric: "delta_v_vec"
+      sign: "maximize"
+      weight: 1.0
+    - metric: "energy_from_planet_orbit"
+      sign: "maximize"
+      weight: 1.0
+  weighted_normalization: "minmax"
   n_parallel: null
 
 visualization:
@@ -93,6 +107,19 @@ visualization:
   animate_comparison: false
   figure_dpi: 100
   figure_format: "png"
+  generate_publication_dashboard: true
+  generate_candidate_ranking_plot: true
+  trajectory_gradient_mode: "kde"      # "line_overlay" | "hexbin" | "kde" | "time_video"
+  trajectory_overlay_lines: false         # gradient-only testing (no trajectory line clutter)
+  trajectory_overlay_line_count: 0
+  trajectory_confidence_min_count: 2
+  trajectory_energy_norm_mode: "auto"     # use "fixed" with vmin/vmax for cross-run parity
+  trajectory_energy_vmin: null
+  trajectory_energy_vmax: null
+  trajectory_hexbin_gridsize: 150
+  trajectory_kde_sigma_bins: 2.0
+  trajectory_time_frames: 48
+  trajectory_time_export_npz: true
 
 two_body:
   scattering_body: "both"

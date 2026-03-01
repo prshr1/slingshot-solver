@@ -1,0 +1,104 @@
+# ===========================================================================
+# Publication Methodology Config (PARETO objective)
+# ---------------------------------------------------------------------------
+# Identical to the single/weighted publication configs except for selection.
+# ===========================================================================
+
+system:
+  name: "Kepler-432"
+  M_star_Msun: 1.19
+  M_planet_Mjup: 5.2
+  R_planet_Rjup: 1.155
+  R_star_Rsun: 4.06
+  a_planet_AU: 0.0896
+  bulk_velocity_vx_kms: 0.0
+  bulk_velocity_vy_kms: 0.0
+
+sampling:
+  mode: "barycentric"
+  v_mag_min_kms: 15.0
+  v_mag_max_kms: 150.0
+  impact_param_min_AU: 0.03
+  impact_param_max_AU: 0.25
+  angle_in_min_deg: -90.0
+  angle_in_max_deg: 90.0
+  r_init_AU: 3.0
+  bary_unbound_requirement: "both"
+
+numerical:
+  rtol: 1.0e-10
+  atol: 1.0e-10
+  ode_method: "DOP853"
+  r_far_factor: 50
+  min_clearance_factor: 1.05
+  flyby_r_min_max_hill: 5
+  escape_radius_factor: 3
+  softening_km: 1000.0
+  star_min_clearance_Rstar: 2.0
+
+pipeline:
+  N_particles: 6000
+  t_mc_max_sec: 5e7
+  t_best_max_sec: 5e7
+  n_eval_best: 0
+  top_frac: 0.10
+  min_top: 20
+  select_mode: "pareto"
+  select_metric: "bary_delta_v"
+  select_sign: "maximize"
+  selection_objectives:
+    - metric: "bary_delta_v"
+      sign: "maximize"
+      weight: 1.0
+    - metric: "delta_v_vec"
+      sign: "maximize"
+      weight: 1.0
+    - metric: "energy_from_planet_orbit"
+      sign: "maximize"
+      weight: 1.0
+  weighted_normalization: "minmax"
+  n_parallel: null
+
+visualization:
+  render_video: false
+  video_fps: 30
+  video_format: "mp4"
+  animate_trajectory: true
+  animate_phase_space: true
+  animate_comparison: false
+  figure_dpi: 120
+  figure_format: "png"
+  generate_publication_dashboard: true
+  generate_candidate_ranking_plot: true
+  generate_2body_heatmaps: true
+  generate_scattering_maps: true
+  generate_poincare_maps: true
+  generate_oberth_maps: false
+  heatmap_grid_resolution: 60
+  heatmap_approach_angles_deg: [0.0, 45.0, 85.0]
+  top_n_overlay: 5
+
+two_body:
+  scattering_body: "both"
+  baseline_mode: "narrowed"
+  padding_factor: 1.5
+  num_v: 20
+  num_b_narrow: 100
+  num_angles_narrow: 100
+  v_approach_kms: 50.0
+  vstar0_kms: 10.0
+  r_start_km: 1.0e11
+  b_min_km: 1.0e7
+  b_max_km: 4.0e9
+  num_b: 150
+  log_spacing: true
+  angle_min_deg: 270.0
+  angle_max_deg: 360.0
+  num_angles: 200
+  num_points: 400
+  output_dir: "results/two_body"
+
+metadata:
+  case_name: "PubMethod_Pareto"
+  objective: "Non-dominated tradeoff sampling across scalar/vector/intrinsic metrics"
+  notes: "Use identical settings across single/pareto/weighted for fair mode-to-mode comparison."

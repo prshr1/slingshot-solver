@@ -372,13 +372,25 @@ def analyze_trajectory(
             theta_p_f = np.degrees(np.arctan2(enc.v_rel_f[1], enc.v_rel_f[0]))
             planet_deflection_deg = wrap_angle_deg(theta_p_f - theta_p_i)
         
-        # Monopole baseline: energy the particle would have from a point mass
-        # M_total at the barycenter.  Δε_monopole ≈ 0 (no moving body → no
-        # energy transfer).  The difference ε_3body − ε_monopole isolates the
-        # energy extracted from the binary's orbital KE.
+        # Monopole baseline in COM-relative coordinates.
+        # This stays parity-consistent under optional bulk drift.
+        xcom_i = (m_star * xs_i + m_p * xp_i) / M_tot
+        ycom_i = (m_star * ys_i + m_p * yp_i) / M_tot
+        vxcom_i = (m_star * y_sol[2, enc.i0] + m_p * y_sol[6, enc.i0]) / M_tot
+        vycom_i = (m_star * y_sol[3, enc.i0] + m_p * y_sol[7, enc.i0]) / M_tot
+        xcom_f = (m_star * xs_f + m_p * xp_f) / M_tot
+        ycom_f = (m_star * ys_f + m_p * yp_f) / M_tot
+        vxcom_f = (m_star * y_sol[2, enc.i1] + m_p * y_sol[6, enc.i1]) / M_tot
+        vycom_f = (m_star * y_sol[3, enc.i1] + m_p * y_sol[7, enc.i1]) / M_tot
+
+        r_i_com = np.hypot(enc.r_in_bary[0] - xcom_i, enc.r_in_bary[1] - ycom_i)
+        r_f_com = np.hypot(enc.r_out_bary[0] - xcom_f, enc.r_out_bary[1] - ycom_f)
+        v_i_com = np.hypot(enc.v_in_bary[0] - vxcom_i, enc.v_in_bary[1] - vycom_i)
+        v_f_com = np.hypot(enc.v_out_bary[0] - vxcom_f, enc.v_out_bary[1] - vycom_f)
+
         mu_tot = G * M_tot
-        eps_monopole_i = 0.5 * v_i**2 - mu_tot / r_i if r_i > 0 else np.nan
-        eps_monopole_f = 0.5 * v_f**2 - mu_tot / r_f if r_f > 0 else np.nan
+        eps_monopole_i = 0.5 * v_i_com**2 - mu_tot / r_i_com if r_i_com > 0 else np.nan
+        eps_monopole_f = 0.5 * v_f_com**2 - mu_tot / r_f_com if r_f_com > 0 else np.nan
         delta_eps_monopole = eps_monopole_f - eps_monopole_i if not (np.isnan(eps_monopole_i) or np.isnan(eps_monopole_f)) else np.nan
         delta_eps_3body = eps_f - eps_i
         energy_from_planet_orbit = delta_eps_3body - delta_eps_monopole if not np.isnan(delta_eps_monopole) else np.nan

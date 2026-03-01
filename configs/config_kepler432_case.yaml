@@ -27,6 +27,8 @@ system:
   R_planet_Rjup: 1.155      # Planet radius [R♃]
   R_star_Rsun: 4.06         # Star radius [R☉]  (Kepler-432 is a K0 subgiant)
   a_planet_AU: 0.0896       # Orbital semi-major axis [AU]
+  bulk_velocity_vx_kms: 0.0 # Optional system bulk velocity (Galilean boost)
+  bulk_velocity_vy_kms: 0.0
 
 # ---------------------------------------------------------------------------
 # SAMPLING  (matches SamplingConfig)
@@ -76,8 +78,20 @@ pipeline:
   n_eval_best: 0                 # 0 = adaptive solver steps (dense near encounters)
   top_frac: 0.10                # Fraction of successes to re-run
   min_top: 1
+  select_mode: "single"         # "single" | "pareto" | "weighted"
   select_metric: "bary_delta_v_pct"
   select_sign: "maximize"
+  selection_objectives:         # used by pareto/weighted modes
+    - metric: "bary_delta_v"
+      sign: "maximize"
+      weight: 1.0
+    - metric: "delta_v_vec"
+      sign: "maximize"
+      weight: 1.0
+    - metric: "energy_from_planet_orbit"
+      sign: "maximize"
+      weight: 1.0
+  weighted_normalization: "minmax"
   n_parallel: null               # null = serial
 
 # ---------------------------------------------------------------------------
@@ -92,6 +106,19 @@ visualization:
   animate_comparison: false
   figure_dpi: 100
   figure_format: "png"
+  generate_publication_dashboard: true
+  generate_candidate_ranking_plot: true
+  trajectory_gradient_mode: "hexbin"
+  trajectory_overlay_lines: true
+  trajectory_overlay_line_count: 90
+  trajectory_confidence_min_count: 2
+  trajectory_energy_norm_mode: "auto"
+  trajectory_energy_vmin: null
+  trajectory_energy_vmax: null
+  trajectory_hexbin_gridsize: 150
+  trajectory_kde_sigma_bins: 2.0
+  trajectory_time_frames: 48
+  trajectory_time_export_npz: true
 
 # ---------------------------------------------------------------------------
 # TWO-BODY ENCOUNTER PARAMETERS  (consumed by trajectory_tracks.py)

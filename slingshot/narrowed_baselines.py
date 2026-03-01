@@ -55,6 +55,7 @@ class EnvelopeParams:
 
     # Star velocity estimate (km/s) — median of candidates
     vstar0: float
+    vstar_vec: Tuple[float, float]
 
     # Metadata
     n_candidates: int
@@ -67,13 +68,13 @@ class EnvelopeParams:
             f"  v_approach : [{self.v_approach_min:.2f}, {self.v_approach_max:.2f}] km/s\n"
             f"  b          : [{self.b_min:.2e}, {self.b_max:.2e}] km\n"
             f"  angle      : [{np.degrees(self.angle_min):.1f}°, {np.degrees(self.angle_max):.1f}°]\n"
-            f"  vstar0     : {self.vstar0:.2f} km/s"
+            f"  vstar      : ({self.vstar_vec[0]:.2f}, {self.vstar_vec[1]:.2f}) km/s  |v|={self.vstar0:.2f} km/s"
         )
 
 
 def _extract_candidate_params(
     analysis: Dict[str, Any],
-) -> Optional[Dict[str, float]]:
+) -> Optional[Dict[str, Any]]:
     """
     Extract scattering parameters from one 3-body analysis dict.
 
@@ -88,13 +89,26 @@ def _extract_candidate_params(
         Keys: v_approach, impact_parameter, angle, vstar0.
         Returns None if encounter data is missing.
     """
-    enc: Optional[EncounterGeometry] = analysis.get("encounter")
-    if enc is None or not enc.ok:
+    enc_raw = analysis.get("encounter")
+    if enc_raw is None:
         return None
+    if isinstance(enc_raw, dict):
+        if not bool(enc_raw.get("ok", False)):
+            return None
+        v_rel_i = enc_raw.get("v_rel_i")
+        r_rel_i = enc_raw.get("r_rel_i")
+        star_v_bary_in = enc_raw.get("star_v_bary_in")
+    else:
+        enc: Optional[EncounterGeometry] = enc_raw
+        if not enc.ok:
+            return None
+        v_rel_i = enc.v_rel_i
+        r_rel_i = enc.r_rel_i
+        star_v_bary_in = enc.star_v_bary_in
 
     # Planet-frame approach speed = |v_rel_i|
-    if enc.v_rel_i is not None:
-        v_approach = float(np.linalg.norm(enc.v_rel_i))
+    if v_rel_i is not None:
+        v_approach = float(np.linalg.norm(v_rel_i))
     else:
         v_approach = analysis.get("v_i", None)
         if v_approach is None:
@@ -102,29 +116,32 @@ def _extract_candidate_params(
 
     # Impact parameter
     b = analysis.get("impact_parameter", None)
-    if b is None and enc.v_rel_i is not None and enc.r_rel_i is not None:
-        v_mag = np.linalg.norm(enc.v_rel_i)
-        L_mag = abs(np.cross(enc.r_rel_i, enc.v_rel_i))
+    if b is None and v_rel_i is not None and r_rel_i is not None:
+        v_mag = np.linalg.norm(v_rel_i)
+        L_mag = abs(np.cross(r_rel_i, v_rel_i))
         b = L_mag / v_mag if v_mag > 0 else 0.0
     if b is None:
         return None
 
     # Approach angle in planet frame
-    if enc.v_rel_i is not None:
-        angle = float(np.arctan2(enc.v_rel_i[1], enc.v_rel_i[0]))
+    if v_rel_i is not None:
+        angle = float(np.arctan2(v_rel_i[1], v_rel_i[0]))
     else:
         angle = 0.0
 
     # Star barycentric speed at encounter entry → vstar0
+    vstar_vec = (0.0, 0.0)
     vstar0 = 0.0
-    if enc.star_v_bary_in is not None:
-        vstar0 = float(np.linalg.norm(enc.star_v_bary_in))
+    if star_v_bary_in is not None:
+        vstar_vec = (float(star_v_bary_in[0]), float(star_v_bary_in[1]))
+        vstar0 = float(np.hypot(vstar_vec[0], vstar_vec[1]))
 
     return {
         "v_approach": v_approach,
         "impact_parameter": b,
         "angle": angle,
         "vstar0": vstar0,
+        "vstar_vec": vstar_vec,
     }
 
 
@@ -161,6 +178,8 @@ def extract_envelope(
     bs = np.array([p["impact_parameter"] for p in params_list])
     angles = np.array([p["angle"] for p in params_list])
     vstars = np.array([p["vstar0"] for p in params_list])
+    vstars_x = np.array([p["vstar_vec"][0] for p in params_list])
+    vstars_y = np.array([p["vstar_vec"][1] for p in params_list])
 
     v_min, v_max = float(vs.min()), float(vs.max())
     b_min, b_max = float(bs.min()), float(bs.max())
@@ -186,8 +205,10 @@ def extract_envelope(
     # body-radius enforcement happens in TwoBodyEncounter.compute_trajectory)
     b_min_p = max(b_min_p, 1.0)
 
-    # vstar0: use median across candidates
+    # Star velocity: median vector across candidates
     vstar0_median = float(np.median(vstars))
+    vstar_vec_median = (float(np.median(vstars_x)), float(np.median(vstars_y)))
+    vstar0_median = float(np.hypot(vstar_vec_median[0], vstar_vec_median[1]))
 
     return EnvelopeParams(
         v_approach_min=v_min_p,
@@ -197,6 +218,7 @@ def extract_envelope(
         angle_min=a_min_p,
         angle_max=a_max_p,
         vstar0=vstar0_median,
+        vstar_vec=vstar_vec_median,
         n_candidates=len(params_list),
         padding_factor=padding_factor,
     )
@@ -220,6 +242,15 @@ class NarrowedBaselineResult:
     all_epsilons: np.ndarray         # All valid ε values
     all_deltaVs: np.ndarray          # All valid |ΔV_vec| values
 
+    # Sample-level analytics (aligned arrays over valid trajectories)
+    sample_v_approach: Optional[np.ndarray] = None   # km/s
+    sample_b: Optional[np.ndarray] = None            # km
+    sample_angle: Optional[np.ndarray] = None        # rad
+    sample_energy: Optional[np.ndarray] = None       # ½|ΔV|² [km²/s²]
+    sample_deltaV: Optional[np.ndarray] = None       # |ΔV_vec| [km/s]
+    sample_vx_final_rel: Optional[np.ndarray] = None # km/s (relative to moving body)
+    sample_vy_final_rel: Optional[np.ndarray] = None # km/s (relative to moving body)
+
     # Best trajectories (optional — for plotting)
     best_eps_traj: Optional[TrajectoryResult] = None
     best_dv_traj: Optional[TrajectoryResult] = None
@@ -233,6 +264,7 @@ def run_narrowed_sweep(
     num_angles: int = 100,
     r_start_km: float = 1.0e11,
     log_b: bool = True,
+    verbose: bool = True,
 ) -> NarrowedBaselineResult:
     """
     Run a TwoBodyScatter sweep over the narrowed parameter envelope.
@@ -274,12 +306,21 @@ def run_narrowed_sweep(
         b_grid = np.linspace(envelope.b_min, envelope.b_max, num_b)
     angle_grid = np.linspace(envelope.angle_min, envelope.angle_max, num_angles)
 
-    vstar0 = envelope.vstar0
+    vstar_vec = envelope.vstar_vec if hasattr(envelope, "vstar_vec") else (0.0, envelope.vstar0)
+    vstar_x, vstar_y = float(vstar_vec[0]), float(vstar_vec[1])
     total = num_v * num_b * num_angles
-    print(f"[{encounter.label}] Narrowed sweep: {num_v}×{num_b}×{num_angles} = {total} encounters …")
+    if verbose:
+        print(f"[{encounter.label}] Narrowed sweep: {num_v}×{num_b}×{num_angles} = {total} encounters …")
 
     epsilons: List[float] = []
     deltaVs: List[float] = []
+    sample_v: List[float] = []
+    sample_b: List[float] = []
+    sample_a: List[float] = []
+    sample_e: List[float] = []
+    sample_dv: List[float] = []
+    sample_vxf: List[float] = []
+    sample_vyf: List[float] = []
     best_eps_val = -np.inf
     best_dv_val = -np.inf
     best_eps_traj: Optional[TrajectoryResult] = None
@@ -295,11 +336,11 @@ def run_narrowed_sweep(
                 perp = angle + np.pi / 2
                 xm0 = -vx / v_approach * r_start_km + b_mag * np.cos(perp)
                 ym0 = -vy / v_approach * r_start_km + b_mag * np.sin(perp)
-                um0 = vx
-                vm0 = vy + vstar0
+                um0 = vx + vstar_x
+                vm0 = vy + vstar_y
 
                 traj = encounter.compute_trajectory(
-                    xm0, ym0, um0, vm0, vstar0, num_points=50,
+                    xm0, ym0, um0, vm0, (vstar_x, vstar_y), num_points=50,
                 )
                 count += 1
 
@@ -308,6 +349,13 @@ def run_narrowed_sweep(
                     dv = traj.deltaV  # vector ΔV magnitude from TwoBodyScatter
                     epsilons.append(eps)
                     deltaVs.append(dv)
+                    sample_v.append(float(v_approach))
+                    sample_b.append(float(b_mag))
+                    sample_a.append(float(angle))
+                    sample_e.append(float(traj.orbital_energy))
+                    sample_dv.append(float(dv))
+                    sample_vxf.append(float(traj.umF - vstar_x))
+                    sample_vyf.append(float(traj.vmF - vstar_y))
                     valid_count += 1
 
                     if eps > best_eps_val:
@@ -317,13 +365,21 @@ def run_narrowed_sweep(
                         best_dv_val = dv
                         best_dv_traj = traj
 
-                if count % max(1, total // 5) == 0:
+                if verbose and count % max(1, total // 5) == 0:
                     print(f"  {count}/{total} ({valid_count} valid) …")
 
-    print(f"[{encounter.label}] Complete: {valid_count}/{total} successful")
+    if verbose:
+        print(f"[{encounter.label}] Complete: {valid_count}/{total} successful")
 
     eps_arr = np.array(epsilons) if epsilons else np.array([])
     dv_arr = np.array(deltaVs) if deltaVs else np.array([])
+    sample_v_arr = np.array(sample_v) if sample_v else np.array([])
+    sample_b_arr = np.array(sample_b) if sample_b else np.array([])
+    sample_a_arr = np.array(sample_a) if sample_a else np.array([])
+    sample_e_arr = np.array(sample_e) if sample_e else np.array([])
+    sample_dv_arr = np.array(sample_dv) if sample_dv else np.array([])
+    sample_vxf_arr = np.array(sample_vxf) if sample_vxf else np.array([])
+    sample_vyf_arr = np.array(sample_vyf) if sample_vyf else np.array([])
 
     return NarrowedBaselineResult(
         label=encounter.label,
@@ -335,6 +391,13 @@ def run_narrowed_sweep(
         n_total=total,
         all_epsilons=eps_arr,
         all_deltaVs=dv_arr,
+        sample_v_approach=sample_v_arr,
+        sample_b=sample_b_arr,
+        sample_angle=sample_a_arr,
+        sample_energy=sample_e_arr,
+        sample_deltaV=sample_dv_arr,
+        sample_vx_final_rel=sample_vxf_arr,
+        sample_vy_final_rel=sample_vyf_arr,
         best_eps_traj=best_eps_traj,
         best_dv_traj=best_dv_traj,
     )
@@ -347,6 +410,7 @@ def compute_narrowed_baselines(
     num_v: int = 20,
     num_b: int = 100,
     num_angles: int = 100,
+    verbose: bool = True,
 ) -> Dict[str, Any]:
     """
     Top-level entry point: extract envelope from top 3-body candidates,
@@ -398,7 +462,8 @@ def compute_narrowed_baselines(
             "summary": "No valid candidates — cannot build envelope.",
         }
 
-    print(envelope.summary())
+    if verbose:
+        print(envelope.summary())
 
     # --- resolve physical radii ---
     R_star_Rsun = getattr(cfg.system, 'R_star_Rsun', 1.0) if hasattr(cfg, 'system') else 1.0
@@ -416,11 +481,13 @@ def compute_narrowed_baselines(
         star_enc, envelope,
         num_v=num_v, num_b=num_b, num_angles=num_angles,
         r_start_km=r_start_km,
+        verbose=verbose,
     )
     planet_result = run_narrowed_sweep(
         planet_enc, envelope,
         num_v=num_v, num_b=num_b, num_angles=num_angles,
         r_start_km=r_start_km,
+        verbose=verbose,
     )
 
     # --- summary ---
@@ -431,21 +498,22 @@ def compute_narrowed_baselines(
         "=" * 60,
         envelope.summary(),
         "-" * 60,
-        f"  Star  2-body: max ½|ΔV|² = {star_result.max_energy_half_dv_vec_sq:.4f} km²/s²  |  "
-        f"max |ΔV_vec| = {star_result.max_deltaV_vec:.2f} km/s  "
+        f"  Star  2-body: max 0.5|dV|^2 = {star_result.max_energy_half_dv_vec_sq:.4f} km^2/s^2  |  "
+        f"max |dV_vec| = {star_result.max_deltaV_vec:.2f} km/s  "
         f"({star_result.n_valid}/{star_result.n_total} valid)",
-        f"  Planet 2-body: max ½|ΔV|² = {planet_result.max_energy_half_dv_vec_sq:.4f} km²/s²  |  "
-        f"max |ΔV_vec| = {planet_result.max_deltaV_vec:.2f} km/s  "
+        f"  Planet 2-body: max 0.5|dV|^2 = {planet_result.max_energy_half_dv_vec_sq:.4f} km^2/s^2  |  "
+        f"max |dV_vec| = {planet_result.max_deltaV_vec:.2f} km/s  "
         f"({planet_result.n_valid}/{planet_result.n_total} valid)",
-        f"  (ε = ½v∞² ≈ {star_result.max_epsilon:.1f} — same for both; it's approach KE, not scattering energy)",
+        f"  (epsilon = 0.5*v_inf^2 ~= {star_result.max_epsilon:.1f}; same for both, approach KE not scattering energy)",
         "",
-        f"  ★ Planet-only ceiling for slingshot comparison:",
-        f"    max scalar |ΔV_vec| = {planet_result.max_deltaV_vec:.2f} km/s,  "
-        f"½|ΔV|² = {planet_result.max_energy_half_dv_vec_sq:.2f} km²/s²",
+        "  Planet-only ceiling for slingshot comparison:",
+        f"    max scalar |dV_vec| = {planet_result.max_deltaV_vec:.2f} km/s,  "
+        f"0.5|dV|^2 = {planet_result.max_energy_half_dv_vec_sq:.2f} km^2/s^2",
         "=" * 60,
     ]
     summary_str = "\n".join(lines)
-    print(summary_str)
+    if verbose:
+        print(summary_str)
 
     return {
         "envelope": envelope,

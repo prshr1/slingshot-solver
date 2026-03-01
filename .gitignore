@@ -1,6 +1,7 @@
 # Results and output data
 results/
 Archive/
+Paper/
 
 # Generated images
 *.png

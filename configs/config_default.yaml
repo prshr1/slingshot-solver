@@ -8,6 +8,8 @@ system:
   R_planet_Rjup: 1.155
   R_star_Rsun: 4.06          # Star radius [R☉]
   a_planet_AU: 0.0896
+  bulk_velocity_vx_kms: 0.0  # Optional system bulk velocity (Galilean boost)
+  bulk_velocity_vy_kms: 0.0
 
 sampling:
   mode: barycentric  # "barycentric" or "planet"
@@ -46,8 +48,20 @@ pipeline:
   n_eval_best: 1000
   top_frac: 0.10
   min_top: 1
-  select_metric: bary_delta_v_pct  # "planet_delta_v", "bary_delta_v", "bary_delta_v_pct", "bary_delta_v_abs"
+  select_mode: single  # "single", "pareto", "weighted"
+  select_metric: bary_delta_v_pct  # e.g. "bary_delta_v", "delta_v_vec", "energy_from_planet_orbit"
   select_sign: maximize  # "maximize", "minimize", "abs"
+  selection_objectives:  # used by pareto/weighted modes
+    - metric: bary_delta_v
+      sign: maximize
+      weight: 1.0
+    - metric: delta_v_vec
+      sign: maximize
+      weight: 1.0
+    - metric: energy_from_planet_orbit
+      sign: maximize
+      weight: 1.0
+  weighted_normalization: minmax  # "minmax" or "rank"
   n_parallel: null  # null = serial, >1 = parallel workers
 
 visualization:
@@ -59,8 +73,21 @@ visualization:
   animate_phase_space: true
   animate_comparison: false
   
-  figure_dpi: 100
+  figure_dpi: 150
   figure_format: png
+  generate_publication_dashboard: true
+  generate_candidate_ranking_plot: true
+  trajectory_gradient_mode: hexbin          # legacy | line_overlay | hexbin | kde | time_video
+  trajectory_overlay_lines: true            # set false for pure gradient field
+  trajectory_overlay_line_count: 90         # max representative lines when overlay is enabled
+  trajectory_confidence_min_count: 2        # min samples per bin for trusted gradients
+  trajectory_energy_norm_mode: auto         # auto | fixed
+  trajectory_energy_vmin: null              # set when norm_mode=fixed
+  trajectory_energy_vmax: null
+  trajectory_hexbin_gridsize: 150
+  trajectory_kde_sigma_bins: 2.0
+  trajectory_time_frames: 48
+  trajectory_time_export_npz: true
 
 two_body:
   scattering_body: both

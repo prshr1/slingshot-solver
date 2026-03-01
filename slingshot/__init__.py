@@ -37,6 +37,9 @@ from .monte_carlo import (
     evaluate_particle,
     run_monte_carlo,
     select_top_indices,
+    select_pareto_indices,
+    select_weighted_indices,
+    resolve_metric_array,
 )
 
 from .baselines import (
@@ -80,6 +83,7 @@ from .config import (
     SystemConfig,
     SamplingConfig,
     NumericalConfig,
+    SelectionObjectiveConfig,
     PipelineConfig,
     VisualizationConfig,
     TwoBodyConfig,
@@ -124,6 +128,7 @@ __all__ = [
     'sample_satellite_state_barycentric', 'sample_satellite_state_near_planet',
     # Monte Carlo
     'evaluate_particle', 'run_monte_carlo', 'select_top_indices',
+    'select_pareto_indices', 'select_weighted_indices', 'resolve_metric_array',
     # Baselines
     'two_body_hyperbola_from_state', 'monopole_ode',
     'simulate_monopole_baseline', 'compare_3body_with_baselines',
@@ -140,7 +145,7 @@ __all__ = [
     'animate_trajectory', 'animate_phase_space', 'generate_all_animations',
     # Config
     'load_config', 'load_system_config', 'save_config',
-    'SystemConfig', 'SamplingConfig', 'NumericalConfig', 'PipelineConfig',
+    'SystemConfig', 'SamplingConfig', 'NumericalConfig', 'SelectionObjectiveConfig', 'PipelineConfig',
     'VisualizationConfig', 'TwoBodyConfig', 'FullConfig',
     # Two-body
     'TwoBodyEncounter', 'TwoBodyGeometry', 'TrajectoryResult',

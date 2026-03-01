@@ -9,7 +9,8 @@ This is a direct Python translation of the mechanics you wrote:
 - Transform back to lab frame
 
 Conventions:
-- Star velocity is (0, vstar0, 0)
+- Star velocity input can be legacy scalar vstar0 (interpreted as (0, vstar0, 0))
+  or full vector (vstar_x, vstar_y)
 - Particle initial lab state at t0: r0=(xm0, ym0, 0), V0=(um0, vm0, 0)
 - Work in xy plane; z=0 always
 """
@@ -17,7 +18,11 @@ Conventions:
 from __future__ import annotations
 import math
 from dataclasses import dataclass
-from typing import Tuple
+from numbers import Real
+from typing import Sequence, Tuple, Union
+
+
+StarVelocity = Union[Real, Sequence[float]]
 
 
 # ---------------------------
@@ -42,29 +47,44 @@ def acosh(x: float) -> float:
 # Star-frame primitives
 # ---------------------------
 
+def _star_velocity_components(vstar0: StarVelocity) -> Tuple[float, float]:
+    """Resolve star-velocity input to (vx, vy).
+
+    Backward compatible behavior:
+    - scalar ``vstar0`` means legacy (0, vstar0)
+    - 2-component sequence means full vector (vx, vy)
+    """
+    if isinstance(vstar0, Real):
+        return 0.0, float(vstar0)
+    if len(vstar0) != 2:
+        raise ValueError(f"Star velocity vector must have 2 components, got {vstar0}")
+    return float(vstar0[0]), float(vstar0[1])
+
+
 def r0fn(xm0: float, ym0: float) -> float:
     """Initial separation magnitude r0 = ||(xm0, ym0)||."""
     return norm2(xm0, ym0)
 
-def v0_vec_star(um0: float, vm0: float, vstar0: float) -> Tuple[float, float]:
+def v0_vec_star(um0: float, vm0: float, vstar0: StarVelocity) -> Tuple[float, float]:
     """Relative velocity vector in star frame."""
-    return (um0, vm0 - vstar0)
+    vsx, vsy = _star_velocity_components(vstar0)
+    return (um0 - vsx, vm0 - vsy)
 
-def v0fn(um0: float, vm0: float, vstar0: float) -> float:
+def v0fn(um0: float, vm0: float, vstar0: StarVelocity) -> float:
     """Initial relative speed in star frame v0 = ||(um0, vm0-vstar0)||."""
     vx, vy = v0_vec_star(um0, vm0, vstar0)
     return norm2(vx, vy)
 
-def hzfn(xm0: float, ym0: float, um0: float, vm0: float, vstar0: float) -> float:
+def hzfn(xm0: float, ym0: float, um0: float, vm0: float, vstar0: StarVelocity) -> float:
     """Planar specific angular momentum z-component: hz = x*vy - y*vx in star frame."""
     vx, vy = v0_vec_star(um0, vm0, vstar0)
     return xm0 * vy - ym0 * vx
 
-def hfn(xm0: float, ym0: float, um0: float, vm0: float, vstar0: float) -> float:
+def hfn(xm0: float, ym0: float, um0: float, vm0: float, vstar0: StarVelocity) -> float:
     """Magnitude of planar specific angular momentum."""
     return abs(hzfn(xm0, ym0, um0, vm0, vstar0))
 
-def epsilonfn(um0: float, vm0: float, vstar0: float, mu: float, xm0: float, ym0: float) -> float:
+def epsilonfn(um0: float, vm0: float, vstar0: StarVelocity, mu: float, xm0: float, ym0: float) -> float:
     """
     Specific orbital energy epsilon = v^2/2 - mu/r evaluated at t0 in star frame.
     NOTE: In the strict t0 -> -infty limit, r->infty, so epsilon -> v_inf^2/2.
@@ -79,7 +99,7 @@ def vinffn(epsilon: float) -> float:
         raise ValueError(f"epsilon must be > 0 for hyperbola; got {epsilon}")
     return math.sqrt(2.0 * epsilon)
 
-def bfn(xm0: float, ym0: float, um0: float, vm0: float, vstar0: float) -> float:
+def bfn(xm0: float, ym0: float, um0: float, vm0: float, vstar0: StarVelocity) -> float:
     """Impact parameter b = |h|/v0."""
     v0 = v0fn(um0, vm0, vstar0)
     if v0 == 0:
@@ -140,13 +160,12 @@ def vp_from_vinf_rp(mu: float, vinf: float, rp: float) -> float:
 # Time of periapsis passage (optional)
 # ---------------------------
 
-def rdot0fn(xm0: float, ym0: float, um0: float, vm0: float, vstar0: float) -> float:
+def rdot0fn(xm0: float, ym0: float, um0: float, vm0: float, vstar0: StarVelocity) -> float:
     """Radial velocity at t0 in star frame: rdot = (r·v)/|r|."""
     r = r0fn(xm0, ym0)
     if r == 0:
         raise ValueError("rdot undefined: r0=0.")
-    vx = um0
-    vy = vm0 - vstar0
+    vx, vy = v0_vec_star(um0, vm0, vstar0)
     return (xm0 * vx + ym0 * vy) / r
 
 def sinf0fn(mu: float, e: float, h: float, rdot0: float) -> float:
@@ -192,7 +211,7 @@ def tbfn(t0: float, e: float, a: float, H0: float, mu: float) -> float:
 # ---------------------------
 
 def vout_star_frame_from_theta(
-    um0: float, vm0: float, vstar0: float, theta: float, hz: float, vmag_out: float
+    um0: float, vm0: float, vstar0: StarVelocity, theta: float, hz: float, vmag_out: float
 ) -> Tuple[float, float]:
     """
     Build orthonormal basis e1 along incoming v(-), e2 = hhat x e1,
@@ -212,9 +231,10 @@ def vout_star_frame_from_theta(
     vy_out = vmag_out * (math.cos(theta) * e1y + math.sin(theta) * e2y)
     return vx_out, vy_out
 
-def lab_from_star(vx_s: float, vy_s: float, vstar0: float) -> Tuple[float, float, float]:
+def lab_from_star(vx_s: float, vy_s: float, vstar0: StarVelocity) -> Tuple[float, float, float]:
     """Transform velocity from star frame to lab frame."""
-    return (vx_s, vy_s + vstar0, 0.0)
+    vsx, vsy = _star_velocity_components(vstar0)
+    return (vx_s + vsx, vy_s + vsy, 0.0)
 
 
 # ---------------------------
@@ -237,7 +257,7 @@ class NoBurnResult:
 def gravity_assist_no_burn(
     xm0: float, ym0: float,
     um0: float, vm0: float,
-    vstar0: float,
+    vstar0: StarVelocity,
     mu: float
 ) -> NoBurnResult:
     """Compute gravity assist with no burn (single hyperbola)."""
@@ -288,7 +308,7 @@ class OberthResult:
 def gravity_assist_oberth(
     xm0: float, ym0: float,
     um0: float, vm0: float,
-    vstar0: float,
+    vstar0: StarVelocity,
     mu: float,
     dv: float
 ) -> OberthResult:
@@ -354,7 +374,7 @@ class ScatteringResult:
 def gravity_assist_closed_form(
     xm0: float, ym0: float,
     um0: float, vm0: float,
-    vstar0: float,
+    vstar0: StarVelocity,
     mu: float
 ) -> ScatteringResult:
     """Full closed-form gravity assist (alias for no-burn with extra info)."""
@@ -372,9 +392,7 @@ def gravity_assist_closed_form(
     theta = theta_from_b_vinf(mu, b, vinf)
     vx_out_s, vy_out_s = vout_star_frame_from_theta(um0, vm0, vstar0, theta, hz, vmag_out=vinf)
 
-    umF = vx_out_s
-    vmF = vy_out_s + vstar0
-    wmF = 0.0
+    umF, vmF, wmF = lab_from_star(vx_out_s, vy_out_s, vstar0)
 
     return ScatteringResult(
         epsilon=eps, vinf=vinf, hz=hz, h=h, b=b, e=e, a=a, rp=rp, theta=theta,
