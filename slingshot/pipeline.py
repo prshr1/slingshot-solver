@@ -22,15 +22,15 @@ import matplotlib.pyplot as plt
 from .config import load_config, save_config, FullConfig
 from .console import configure_console_streams, safe_print as print
 from .constants import G_KM, M_SUN, M_JUP, R_JUP, R_SUN, AU_KM
-from .dynamics import simulate_3body, init_hot_jupiter_barycentric
-from .analysis import analyze_trajectory, extract_encounter_states
-from .monte_carlo import (
+from .core.dynamics import simulate_3body, init_hot_jupiter_barycentric
+from .analysis.trajectory import analyze_trajectory, extract_encounter_states
+from .analysis.monte_carlo import (
     run_monte_carlo,
     select_top_indices,
     select_pareto_indices,
     select_weighted_indices,
 )
-from .plotting import (
+from .output.plotting import (
     plot_mc_summary_individual,
     plot_sampling_parameter_distributions,
     plot_best_candidate_with_bodies,
@@ -44,10 +44,10 @@ from .plotting import (
     plot_publication_objectives_individual,
     plot_candidate_ranking_diagnostics_individual,
 )
-from .baselines import compare_3body_with_baselines
-from .narrowed_baselines import compute_narrowed_baselines
-from .comparison import compare_2body_3body, print_comparison
-from .animation import generate_all_animations
+from .analysis.baselines import compare_3body_with_baselines
+from .analysis.narrowed_baselines import compute_narrowed_baselines
+from .analysis.comparison import compare_2body_3body, print_comparison
+from .output.animation import generate_all_animations
 
 
 # ===================================================================
@@ -586,7 +586,7 @@ def phase_plots(
 
     # 2-body parameter-space heatmaps (from plotting_twobody)
     try:
-        from .plotting_twobody import (
+        from .output.plotting_twobody import (
             plot_poincare_heatmaps,
             plot_scattering_maps,
             plot_encounter_2d_cartesian,
@@ -675,7 +675,7 @@ def phase_plots(
 
     # Trajectory tracks (requires narrowed baselines)
     try:
-        from .plotting_twobody import plot_trajectory_tracks
+        from .output.plotting_twobody import plot_trajectory_tracks
         narrowed = baselines.get("narrowed") if baselines else None
         if narrowed is not None and narrowed.get("envelope") is not None:
             viz = cfg.visualization
@@ -967,7 +967,7 @@ def run_pipeline(
 
     # Auto-generate report
     try:
-        from .report import generate_run_report
+        from .output.report import generate_run_report
         report = generate_run_report(
             output_dir=out,
             cfg=cfg,

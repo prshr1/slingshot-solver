@@ -9,7 +9,7 @@ import csv
 from pathlib import Path
 from typing import Any, Dict, List
 
-from .console import safe_print as print
+from ..console import safe_print as print
 
 try:
     import yaml

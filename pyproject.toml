@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "slingshot-solver"
+version = "3.0.0"
+description = "Gravitational slingshot dynamics in restricted 3-body systems"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "FoxtrotX146"},
+]
+keywords = ["gravity-assist", "orbital-mechanics", "three-body-problem", "slingshot"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "numpy>=1.20.0",
+    "scipy>=1.7.0",
+    "matplotlib>=3.5.0",
+    "pyyaml>=5.4.0",
+    "pydantic>=1.8.0",
+]
+
+[project.optional-dependencies]
+video = ["ffmpeg-python>=0.2.1"]
+dev = [
+    "pytest>=6.0",
+    "black>=21.0",
+    "isort>=5.0",
+    "mypy>=0.900",
+]
+
+[project.scripts]
+slingshot = "slingshot.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["slingshot*"]
+exclude = ["tests*", "Archive*", "branches*", "Paper*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py39"]
+
+[tool.isort]
+profile = "black"
+line_length = 100

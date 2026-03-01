@@ -7,10 +7,10 @@ import numpy as np
 from typing import Optional, Dict, Any, List, Tuple, Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-from .dynamics import init_hot_jupiter_barycentric, simulate_3body
-from .analysis import analyze_trajectory
-from .sampling import sample_satellite_state_barycentric, sample_satellite_state_near_planet
-from .constants import M_SUN, M_JUP, R_JUP, R_SUN
+from ..core.dynamics import init_hot_jupiter_barycentric, simulate_3body
+from .trajectory import analyze_trajectory
+from ..core.sampling import sample_satellite_state_barycentric, sample_satellite_state_near_planet
+from ..constants import M_SUN, M_JUP, R_JUP, R_SUN
 
 
 _METRIC_ALIASES = {

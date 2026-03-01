@@ -14,7 +14,7 @@ import re
 from typing import Optional, Dict, Any, List, Tuple
 from pathlib import Path
 
-from .constants import G_KM, M_SUN, R_SUN, M_JUP, R_JUP, AU_KM
+from ..constants import G_KM, M_SUN, R_SUN, M_JUP, R_JUP, AU_KM
 
 
 def _enc_field(enc: Any, key: str, default: Any = np.nan) -> Any:

@@ -7,8 +7,8 @@ import numpy as np
 from scipy.integrate import solve_ivp
 from typing import Optional, Dict, Any, Tuple
 
-from .analysis import EncounterGeometry
-from .constants import G_KM as G, M_SUN, M_JUP
+from .trajectory import EncounterGeometry
+from ..constants import G_KM as G, M_SUN, M_JUP
 
 
 def two_body_hyperbola_from_state(

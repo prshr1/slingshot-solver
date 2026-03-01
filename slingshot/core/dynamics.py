@@ -7,7 +7,7 @@ import numpy as np
 from scipy.integrate import solve_ivp
 from typing import Optional, Tuple
 
-from .constants import G_KM as G, M_SUN, M_JUP, R_JUP, AU_KM
+from ..constants import G_KM as G, M_SUN, M_JUP, R_JUP, AU_KM
 
 
 def init_hot_jupiter_barycentric(

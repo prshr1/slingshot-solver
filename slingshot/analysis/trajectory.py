@@ -8,7 +8,7 @@ import numpy as np
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
 
-from .constants import G_KM as G, M_SUN, M_JUP, R_JUP
+from ..constants import G_KM as G, M_SUN, M_JUP, R_JUP
 
 
 @dataclass

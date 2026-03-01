@@ -20,30 +20,15 @@ Unit contract (matches the rest of slingshot/):
 import numpy as np
 from dataclasses import dataclass
 from typing import Tuple, Optional, List, Dict, Any, Union, Sequence
-import sys
-from pathlib import Path
 
-from .constants import G_KM, M_SUN, M_JUP, R_SUN, R_JUP
+from ..constants import G_KM, M_SUN, M_JUP, R_SUN, R_JUP
+from .twobody_scatter import (
+    gravity_assist_no_burn,
+    deltaV_lab,
+    _star_velocity_components,
+)
 
 StarVelocity = Union[float, Sequence[float]]
-
-
-def _star_velocity_components(vstar0: StarVelocity) -> Tuple[float, float]:
-    """Resolve star velocity input to (vx, vy) with legacy scalar support."""
-    if np.isscalar(vstar0):
-        return 0.0, float(vstar0)
-    if len(vstar0) != 2:
-        raise ValueError(f"Star velocity vector must have 2 components, got {vstar0}")
-    return float(vstar0[0]), float(vstar0[1])
-
-# Import TwoBodyScatter (unit-agnostic closed-form solver)
-try:
-    from TwoBodyScatter import gravity_assist_no_burn, deltaV_lab
-except ImportError:
-    parent_dir = Path(__file__).parent.parent
-    if str(parent_dir) not in sys.path:
-        sys.path.insert(0, str(parent_dir))
-    from TwoBodyScatter import gravity_assist_no_burn, deltaV_lab
 
 
 # -----------------------------------------------------------------------

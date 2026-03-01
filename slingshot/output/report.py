@@ -14,8 +14,8 @@ import numpy as np
 from datetime import datetime
 import html
 
-from .config import FullConfig
-from .constants import R_SUN, R_JUP
+from ..config import FullConfig
+from ..constants import R_SUN, R_JUP
 
 
 def _fmt_num(v: Any, digits: int = 3, sci: bool = False) -> str:

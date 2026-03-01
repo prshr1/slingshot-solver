@@ -22,27 +22,17 @@ from scipy.ndimage import gaussian_filter
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Any
 
-from .constants import G_KM, M_SUN, M_JUP, R_SUN, R_JUP
+from ..constants import G_KM, M_SUN, M_JUP, R_SUN, R_JUP
 
 # ---------------------------------------------------------------------------
-#  Resolve path to TwoBodyScatter at import time
+#  Import ground-truth physics engine from core
 # ---------------------------------------------------------------------------
-import sys as _sys
-import importlib as _importlib
-
-_ROOT = str(Path(__file__).resolve().parent.parent)
-if _ROOT not in _sys.path:
-    _sys.path.insert(0, _ROOT)
-import TwoBodyScatter as _TBS
-
-
-def _star_velocity_components(vstar0: Any) -> Tuple[float, float]:
-    """Resolve star velocity to (vx, vy) with legacy scalar support."""
-    if np.isscalar(vstar0):
-        return 0.0, float(vstar0)
-    if len(vstar0) != 2:
-        raise ValueError(f"Star velocity vector must have 2 components, got {vstar0}")
-    return float(vstar0[0]), float(vstar0[1])
+from ..core.twobody_scatter import (
+    gravity_assist_no_burn as _ga_no_burn,
+    gravity_assist_oberth as _ga_oberth,
+    deltaV_lab as _deltaV_lab,
+    _star_velocity_components,
+)
 
 
 def _subplot_grid_max_two(
@@ -106,8 +96,8 @@ def _compute_encounter_grid_poincare(
             um0 = -v_inf * np.cos(alpha) + vstar_x
             vm0 = -v_inf * np.sin(alpha) + vstar_y
             try:
-                res = _TBS.gravity_assist_no_burn(xm0, ym0, um0, vm0, vstar_vec, mu)
-                deltaV[i, j] = _TBS.deltaV_lab(um0, vm0, res.umF, res.vmF)
+                res = _ga_no_burn(xm0, ym0, um0, vm0, vstar_vec, mu)
+                deltaV[i, j] = _deltaV_lab(um0, vm0, res.umF, res.vmF)
                 theta[i, j] = np.degrees(res.theta)
                 vinf_out[i, j] = res.vinf
                 rp[i, j] = res.rp
@@ -162,8 +152,8 @@ def _compute_encounter_grid_cartesian(
             um0 = ux_rel + vstar_x
             vm0 = uy_rel + vstar_y
             try:
-                res = _TBS.gravity_assist_no_burn(xm0, ym0, um0, vm0, vstar_vec, mu)
-                deltaV[i, j] = _TBS.deltaV_lab(um0, vm0, res.umF, res.vmF)
+                res = _ga_no_burn(xm0, ym0, um0, vm0, vstar_vec, mu)
+                deltaV[i, j] = _deltaV_lab(um0, vm0, res.umF, res.vmF)
                 theta_grid[i, j] = np.degrees(res.theta)
                 rp_grid[i, j] = res.rp
                 b_grid[i, j] = res.b
@@ -220,8 +210,8 @@ def _compute_encounter_grid_polar(
             ux = -v_approach * np.cos(angle_rad) + vstar_x
             uy = -v_approach * np.sin(angle_rad) + vstar_y
             try:
-                res = _TBS.gravity_assist_no_burn(xm0, ym0, ux, uy, vstar_vec, mu)
-                deltaV[i, j] = _TBS.deltaV_lab(ux, uy, res.umF, res.vmF)
+                res = _ga_no_burn(xm0, ym0, ux, uy, vstar_vec, mu)
+                deltaV[i, j] = _deltaV_lab(ux, uy, res.umF, res.vmF)
                 theta_defl[i, j] = np.degrees(res.theta)
                 rp[i, j] = res.rp
             except Exception:
@@ -486,10 +476,10 @@ def plot_oberth_comparison(
             um0 = -v_inf_kms * np.cos(alpha) + vstar_x
             vm0 = -v_inf_kms * np.sin(alpha) + vstar_y
             try:
-                res_nb = _TBS.gravity_assist_no_burn(xm0, ym0, um0, vm0, vstar_vec, mu)
-                dv_no[i, j] = _TBS.deltaV_lab(um0, vm0, res_nb.umF, res_nb.vmF)
-                res_ob = _TBS.gravity_assist_oberth(xm0, ym0, um0, vm0, vstar_vec, mu, dv_burn_kms)
-                dv_ob[i, j] = _TBS.deltaV_lab(um0, vm0, res_ob.umF, res_ob.vmF)
+                res_nb = _ga_no_burn(xm0, ym0, um0, vm0, vstar_vec, mu)
+                dv_no[i, j] = _deltaV_lab(um0, vm0, res_nb.umF, res_nb.vmF)
+                res_ob = _ga_oberth(xm0, ym0, um0, vm0, vstar_vec, mu, dv_burn_kms)
+                dv_ob[i, j] = _deltaV_lab(um0, vm0, res_ob.umF, res_ob.vmF)
                 gain[i, j] = dv_ob[i, j] - dv_no[i, j]
             except Exception:
                 pass

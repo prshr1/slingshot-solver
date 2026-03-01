@@ -6,7 +6,7 @@ Supports barycentric parametric (hyperbolic) and planet-relative sampling modes.
 import numpy as np
 from typing import Optional, Tuple, Dict, Any, Union
 
-from .constants import AU_KM, R_JUP
+from ..constants import AU_KM, R_JUP
 
 
 def sample_satellite_state_barycentric(

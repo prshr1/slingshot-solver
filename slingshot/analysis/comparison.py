@@ -8,7 +8,7 @@ All values in the canonical unit system: km-kg-s.
 
 from typing import Dict, Any, Optional
 import numpy as np
-from .console import safe_print as print
+from ..console import safe_print as print
 
 
 def compare_2body_3body(

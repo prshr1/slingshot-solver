@@ -32,9 +32,9 @@ import numpy as np
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 
-from .constants import G_KM, M_SUN, M_JUP, R_SUN, R_JUP
-from .analysis import EncounterGeometry
-from .twobody import TwoBodyEncounter, TrajectoryResult
+from ..constants import G_KM, M_SUN, M_JUP, R_SUN, R_JUP
+from .trajectory import EncounterGeometry
+from ..core.twobody import TwoBodyEncounter, TrajectoryResult
 
 
 @dataclass
