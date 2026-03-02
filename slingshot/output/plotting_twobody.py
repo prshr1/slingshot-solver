@@ -537,6 +537,8 @@ def plot_trajectory_tracks(
     gradient_mode: str = "hexbin",
     confidence_min_count: int = 2,
     fixed_energy_range: Optional[Tuple[float, float]] = None,
+    color_metric: str = "scattering_energy",
+    fixed_metric_range: Optional[Tuple[float, float]] = None,
     hexbin_gridsize: int = 150,
     kde_sigma_bins: float = 2.0,
     time_frames: int = 48,
@@ -552,13 +554,24 @@ def plot_trajectory_tracks(
     - gradient_mode: legacy | line_overlay | hexbin | kde | time_video
     - confidence_min_count: minimum per-bin support before a pixel is trusted
     - fixed_energy_range: optional (vmin, vmax) to enforce fixed normalization
+    - color_metric: scattering_energy | delta_v | final_speed
+    - fixed_metric_range: optional (vmin, vmax) override for selected color metric
     - hexbin_gridsize / kde_sigma_bins: estimator controls
     - time_frames/export_time_data: frame cube export for downstream animation
     """
-    from .twobody import TwoBodyEncounter, TrajectoryResult
+    from ..core.twobody import TwoBodyEncounter, TrajectoryResult
 
     # Keep signature parity; currently unused directly.
     _ = analyses_best
+
+    # Handle None narrowed (standalone/synthetic mode)
+    if narrowed is None:
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.text(
+            0.5, 0.5, "Standalone mode: no narrowed baselines",
+            ha="center", va="center", fontsize=14, transform=ax.transAxes,
+        )
+        return [fig]
 
     envelope = narrowed.get("envelope")
     if envelope is None:
@@ -580,6 +593,46 @@ def plot_trajectory_tracks(
     hexbin_gridsize = max(20, int(hexbin_gridsize))
     kde_sigma_bins = max(0.1, float(kde_sigma_bins))
     time_frames = max(2, int(time_frames))
+
+    metric_aliases = {
+        "energy": "scattering_energy",
+        "orbital_energy": "scattering_energy",
+        "scattering_energy": "scattering_energy",
+        "deltav": "delta_v",
+        "delta_v": "delta_v",
+        "dv": "delta_v",
+        "final_speed": "final_speed",
+        "speed": "final_speed",
+    }
+    metric_key = metric_aliases.get(str(color_metric).strip().lower(), str(color_metric).strip().lower())
+    valid_metrics = {"scattering_energy", "delta_v", "final_speed"}
+    if metric_key not in valid_metrics:
+        raise ValueError(f"Unknown color_metric '{color_metric}'. Valid: {sorted(valid_metrics)}")
+
+    if fixed_metric_range is not None and fixed_energy_range is not None:
+        raise ValueError("Specify only one of fixed_metric_range or fixed_energy_range")
+    fixed_range = fixed_metric_range if fixed_metric_range is not None else fixed_energy_range
+
+    metric_meta = {
+        "scattering_energy": {
+            "label": "Scattering energy 0.5|DeltaV|^2 (km^2/s^2)",
+            "title": "scattering-energy",
+            "short": "energy",
+        },
+        "delta_v": {
+            "label": "DeltaV magnitude (km/s)",
+            "title": "delta-v",
+            "short": "delta_v",
+        },
+        "final_speed": {
+            "label": "Final speed |v_f| (km/s)",
+            "title": "final-speed",
+            "short": "final_speed",
+        },
+    }[metric_key]
+    metric_label = metric_meta["label"]
+    metric_title = metric_meta["title"]
+    metric_short = metric_meta["short"]
 
     M_star_kg = cfg.system.M_star_Msun * M_SUN
     M_planet_kg = cfg.system.M_planet_Mjup * M_JUP
@@ -608,18 +661,49 @@ def plot_trajectory_tracks(
 
     figs: List[plt.Figure] = []
 
+    def _trajectory_metric_value(traj: TrajectoryResult) -> float:
+        if metric_key == "scattering_energy":
+            return float(getattr(traj, "orbital_energy", np.nan))
+        if metric_key == "delta_v":
+            dv = float(getattr(traj, "deltaV", np.nan))
+            if np.isfinite(dv):
+                return dv
+            e = float(getattr(traj, "orbital_energy", np.nan))
+            if np.isfinite(e) and e >= 0.0:
+                return float(np.sqrt(2.0 * e))
+            return np.nan
+        if metric_key == "final_speed":
+            return float(np.hypot(float(getattr(traj, "umF", np.nan)), float(getattr(traj, "vmF", np.nan))))
+        return float(getattr(traj, "orbital_energy", np.nan))
+
+    def _resolve_sample_metric(
+        sample_e: np.ndarray,
+        sample_dv: np.ndarray,
+        sample_vx: np.ndarray,
+        sample_vy: np.ndarray,
+    ) -> np.ndarray:
+        if metric_key == "scattering_energy":
+            return np.asarray(sample_e, dtype=float)
+        if metric_key == "delta_v":
+            if sample_dv.size > 0:
+                return np.asarray(sample_dv, dtype=float)
+            return np.sqrt(np.clip(2.0 * np.asarray(sample_e, dtype=float), 0.0, None))
+        if metric_key == "final_speed":
+            return np.hypot(np.asarray(sample_vx, dtype=float), np.asarray(sample_vy, dtype=float))
+        return np.asarray(sample_e, dtype=float)
+
     def _resolve_norm(values: np.ndarray) -> Tuple[plt.Normalize, float, float]:
         finite = np.asarray(values, dtype=float)
         finite = finite[np.isfinite(finite)]
         if finite.size == 0:
             finite = np.array([0.0, 1.0], dtype=float)
 
-        if fixed_energy_range is not None:
-            vmin = float(fixed_energy_range[0])
-            vmax = float(fixed_energy_range[1])
+        if fixed_range is not None:
+            vmin = float(fixed_range[0])
+            vmax = float(fixed_range[1])
             if vmax <= vmin:
                 raise ValueError(
-                    f"fixed_energy_range must satisfy vmax > vmin, got {fixed_energy_range}"
+                    f"fixed range must satisfy vmax > vmin, got {fixed_range}"
                 )
             return plt.Normalize(vmin=vmin, vmax=vmax), vmin, vmax
 
@@ -700,7 +784,7 @@ def plot_trajectory_tracks(
         xs_list: List[np.ndarray] = []
         ys_list: List[np.ndarray] = []
         traj_kept: List[TrajectoryResult] = []
-        energies: List[np.ndarray] = []
+        metric_vals: List[np.ndarray] = []
         for traj in trajs:
             if not traj.valid or len(traj.x_star) == 0:
                 continue
@@ -709,15 +793,16 @@ def plot_trajectory_tracks(
             xs_list.append(xs)
             ys_list.append(ys)
             traj_kept.append(traj)
-            energies.append(np.full(xs.shape, float(traj.orbital_energy), dtype=float))
+            mv = _trajectory_metric_value(traj)
+            metric_vals.append(np.full(xs.shape, mv, dtype=float))
 
         if not xs_list:
             return [], [], [], np.array([]), np.array([]), np.array([])
 
         xs_cat = np.concatenate(xs_list)
         ys_cat = np.concatenate(ys_list)
-        es_cat = np.concatenate(energies)
-        return xs_list, ys_list, traj_kept, xs_cat, ys_cat, es_cat
+        ms_cat = np.concatenate(metric_vals)
+        return xs_list, ys_list, traj_kept, xs_cat, ys_cat, ms_cat
 
     def _grid_mean_energy(
         xs: np.ndarray,
@@ -762,7 +847,7 @@ def plot_trajectory_tracks(
                 idx = max(1, int(round(frac * (n - 1))))
                 xseg = xs[: idx + 1]
                 yseg = ys[: idx + 1]
-                eseg = np.full(xseg.shape, float(traj.orbital_energy), dtype=float)
+                eseg = np.full(xseg.shape, _trajectory_metric_value(traj), dtype=float)
                 hs, _, _ = np.histogram2d(xseg, yseg, bins=bins, range=xy_range, weights=eseg)
                 hc, _, _ = np.histogram2d(xseg, yseg, bins=bins, range=xy_range)
                 sum_e_f += hs
@@ -801,6 +886,68 @@ def plot_trajectory_tracks(
             pad = max(pad, 1.0)
         return lo - pad, hi + pad
 
+    def _adaptive_bins(
+        requested_bins: int,
+        n_points: int,
+        min_per_bin: int,
+        *,
+        min_bins: int,
+    ) -> int:
+        """Downshift grid resolution when point support is too sparse."""
+        req = max(int(min_bins), int(requested_bins))
+        n_pts = max(0, int(n_points))
+        if n_pts <= 0:
+            return req
+        density_cap = int(np.floor(np.sqrt(float(n_pts) / max(float(min_per_bin), 1.0))))
+        if density_cap <= 0:
+            return int(min_bins)
+        return int(max(int(min_bins), min(req, density_cap)))
+
+    def _trim_time_cube_to_occupied(
+        e_frames: np.ndarray,
+        c_frames: np.ndarray,
+        x_edges: np.ndarray,
+        y_edges: np.ndarray,
+        *,
+        pad_cells: int = 2,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Crop exported time cubes to occupied bins to avoid giant empty extents."""
+        if (
+            e_frames.ndim != 3
+            or c_frames.ndim != 3
+            or e_frames.shape != c_frames.shape
+            or e_frames.shape[1] <= 0
+            or e_frames.shape[2] <= 0
+        ):
+            return e_frames, c_frames, x_edges, y_edges
+
+        occupied = np.isfinite(e_frames[-1])
+        if not np.any(occupied):
+            occupied = np.any(np.isfinite(e_frames), axis=0)
+        if not np.any(occupied):
+            occupied = np.any(c_frames >= float(count_thresh), axis=0)
+        if not np.any(occupied):
+            occupied = np.any(c_frames > 0.0, axis=0)
+        if not np.any(occupied):
+            return e_frames, c_frames, x_edges, y_edges
+
+        ix, iy = np.where(occupied)
+        nx, ny = int(e_frames.shape[1]), int(e_frames.shape[2])
+        pad = max(0, int(pad_cells))
+        i_lo = max(int(np.min(ix)) - pad, 0)
+        i_hi = min(int(np.max(ix)) + 1 + pad, nx)
+        j_lo = max(int(np.min(iy)) - pad, 0)
+        j_hi = min(int(np.max(iy)) + 1 + pad, ny)
+        if i_hi <= i_lo or j_hi <= j_lo:
+            return e_frames, c_frames, x_edges, y_edges
+
+        return (
+            e_frames[:, i_lo:i_hi, j_lo:j_hi],
+            c_frames[:, i_lo:i_hi, j_lo:j_hi],
+            x_edges[i_lo : i_hi + 1],
+            y_edges[j_lo : j_hi + 1],
+        )
+
     for tag, label, M_kg, R_km, narrowed_body in bodies:
         if narrowed_body is None:
             fig, ax = plt.subplots(figsize=(8, 4))
@@ -815,10 +962,12 @@ def plot_trajectory_tracks(
         sample_b = np.asarray(getattr(narrowed_body, "sample_b", np.array([])), dtype=float)
         sample_a = np.asarray(getattr(narrowed_body, "sample_angle", np.array([])), dtype=float)
         sample_e = np.asarray(getattr(narrowed_body, "sample_energy", np.array([])), dtype=float)
+        sample_dv = np.asarray(getattr(narrowed_body, "sample_deltaV", np.array([])), dtype=float)
         sample_vxf = np.asarray(getattr(narrowed_body, "sample_vx_final_rel", np.array([])), dtype=float)
         sample_vyf = np.asarray(getattr(narrowed_body, "sample_vy_final_rel", np.array([])), dtype=float)
+        sample_metric = _resolve_sample_metric(sample_e, sample_dv, sample_vxf, sample_vyf)
 
-        if sample_e.size == 0:
+        if sample_metric.size == 0:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.text(
                 0.5, 0.5, f"{label}: no valid sample analytics",
@@ -827,7 +976,7 @@ def plot_trajectory_tracks(
             figs.append(fig)
             continue
 
-        energy_norm, e_vmin, e_vmax = _resolve_norm(sample_e)
+        energy_norm, e_vmin, e_vmax = _resolve_norm(sample_metric)
 
         # 1) phase map from narrowed sweep samples
         if envelope.b_min > 0 and (envelope.b_max / envelope.b_min) > 20:
@@ -837,7 +986,7 @@ def plot_trajectory_tracks(
         a_edges = np.linspace(envelope.angle_min, envelope.angle_max, num_angles + 1)
 
         e_grid, vx_grid, vy_grid, n_grid = _phase_grid_from_samples(
-            sample_b, sample_a, sample_e, sample_vxf, sample_vyf, b_edges, a_edges
+            sample_b, sample_a, sample_metric, sample_vxf, sample_vyf, b_edges, a_edges
         )
 
         phase_mask = n_grid >= count_thresh
@@ -857,10 +1006,10 @@ def plot_trajectory_tracks(
             shading="auto", cmap="viridis", norm=energy_norm,
         )
         cb1 = fig_phase_e.colorbar(pcm, ax=ax_e, pad=0.02)
-        cb1.set_label("Scattering energy 0.5|DeltaV|^2 (km^2/s^2)")
+        cb1.set_label(metric_label)
         ax_e.set_xlabel("Approach angle alpha (deg)")
         ax_e.set_ylabel("Impact parameter b (10^6 km)")
-        ax_e.set_title(f"{label}: scattering-energy gradient")
+        ax_e.set_title(f"{label}: {metric_title} gradient")
         ax_e.grid(True, alpha=0.2, linestyle="--")
         if np.any(phase_mask):
             ax_e.contour(
@@ -870,7 +1019,7 @@ def plot_trajectory_tracks(
         fig_phase_e.suptitle(
             f"{label} phase diagnostics - {sys_name}\n"
             f"{envelope_line}\n"
-            f"mode={mode}, conf>={count_thresh} samples/bin, energy=[{e_vmin:.2f}, {e_vmax:.2f}]",
+            f"mode={mode}, conf>={count_thresh} samples/bin, {metric_short}=[{e_vmin:.2f}, {e_vmax:.2f}]",
             fontsize=12, fontweight="bold",
         )
         fig_phase_e.tight_layout()
@@ -909,7 +1058,7 @@ def plot_trajectory_tracks(
         fig_phase_v.suptitle(
             f"{label} phase diagnostics - {sys_name}\n"
             f"{envelope_line}\n"
-            f"mode={mode}, conf>={count_thresh} samples/bin, energy=[{e_vmin:.2f}, {e_vmax:.2f}]",
+            f"mode={mode}, conf>={count_thresh} samples/bin, {metric_short}=[{e_vmin:.2f}, {e_vmax:.2f}]",
             fontsize=12, fontweight="bold",
         )
         fig_phase_v.tight_layout()
@@ -917,8 +1066,8 @@ def plot_trajectory_tracks(
 
         # 2) reconstruct representative trajectories for track-space rendering
         enc = TwoBodyEncounter(M_kg, G_KM, label=tag, R_body_km=R_km)
-        n_valid = len(sample_e)
-        order = np.argsort(sample_e)
+        n_valid = len(sample_metric)
+        order = np.argsort(sample_metric)
         if n_valid > max_overlay_tracks:
             pick = order[np.linspace(0, n_valid - 1, max_overlay_tracks, dtype=int)]
         else:
@@ -941,7 +1090,7 @@ def plot_trajectory_tracks(
                 trajs.append(tr)
 
         fig, ax = plt.subplots(figsize=(14, 8))
-        valid_e = np.array([t.orbital_energy for t in trajs if t.valid], dtype=float)
+        valid_e = np.array([_trajectory_metric_value(t) for t in trajs if t.valid], dtype=float)
         if valid_e.size == 0:
             ax.text(
                 0.5, 0.5, f"{label}: no representative trajectories",
@@ -957,26 +1106,58 @@ def plot_trajectory_tracks(
             x_pool.append(x3)
             y_pool.append(y3)
 
-        if x_pool:
+        # Compute visualization radius from the periapsis region of each
+        # trajectory (closest approach distances), NOT from the long approach/
+        # departure legs which can extend to r_start (~1e11 km).
+        # This ensures the plot zooms into where the scattering actually happens.
+        periapsis_radii = []
+        for t in trajs:
+            if not t.valid or len(t.x_star) == 0:
+                continue
+            rr_traj = np.hypot(np.asarray(t.x_star), np.asarray(t.y_star))
+            periapsis_radii.append(float(np.min(rr_traj)))
+
+        if periapsis_radii:
+            # Use the impact parameter range to set the view: zoom to a
+            # multiple of the median periapsis distance so the scattering
+            # region fills the plot.  Fall back to b-based estimate if empty.
+            b_arr = sample_b[np.isfinite(sample_b)]
+            if b_arr.size > 0:
+                # Use percentile of impact params as the natural scale
+                r_vis = float(np.percentile(b_arr, 95.0)) * 2.5
+            else:
+                r_vis = float(np.median(periapsis_radii)) * 8.0
+        elif x_pool:
             xx = np.concatenate(x_pool)
             yy = np.concatenate(y_pool)
             rr = np.hypot(xx, yy)
             rr = rr[np.isfinite(rr)]
             if rr.size > 0:
-                r_vis = float(np.percentile(rr, 96.0))
+                r_vis = float(np.percentile(rr, 50.0)) * 3.0
             else:
                 r_vis = float(envelope.b_max * 1.5)
         else:
             r_vis = float(envelope.b_max * 1.5)
 
-        r_vis = max(r_vis, float(R_km * 3.0), float(envelope.b_max * 0.8))
+        # Floor: at least 3× the body radius so the body marker is visible
+        r_vis = max(r_vis, float(R_km * 3.0))
         r_vis *= (1.0 + padding_frac)
         SCALE = 1e6
         grad_pad_frac = max(0.05, min(0.30, 0.5 * float(padding_frac)))
+        xs_list, ys_list, traj_keep, xs_cat, ys_cat, es_cat = _collect_trajectory_points(trajs)
+        if xs_cat.size > 0:
+            rr_cat = np.hypot(xs_cat, ys_cat)
+            rr_cat = rr_cat[np.isfinite(rr_cat)]
+            if rr_cat.size > 8:
+                r_focus = float(np.percentile(rr_cat, 70.0))
+                if np.isfinite(r_focus) and r_focus > 0.0:
+                    r_focus = max(r_focus * 1.8, float(R_km * 3.0))
+                    r_focus *= (1.0 + padding_frac)
+                    if r_focus < r_vis:
+                        r_vis = float(r_focus)
+
         xlim_grad_km: Tuple[float, float] = (-r_vis, r_vis)
         ylim_grad_km: Tuple[float, float] = (-r_vis, r_vis)
-
-        xs_list, ys_list, traj_keep, xs_cat, ys_cat, es_cat = _collect_trajectory_points(trajs)
         time_cube_energy = None
         time_cube_count = None
         time_xedges = None
@@ -984,24 +1165,30 @@ def plot_trajectory_tracks(
 
         if xs_cat.size > 0:
             if mode == "legacy":
-                # Legacy style: clean line-rendered trajectories colored by specific orbital energy.
+                # Legacy style: clean line-rendered trajectories colored by selected scalar.
                 for traj in trajs:
                     if not traj.valid or len(traj.x_star) == 0:
                         continue
                     x = traj.x_star / SCALE
                     y = traj.y_star / SCALE
-                    colour = cmap(energy_norm(traj.orbital_energy))
+                    colour = cmap(energy_norm(_trajectory_metric_value(traj)))
                     ax.plot(x, y, lw=1.35, color=colour, alpha=0.72, zorder=2)
                 sm = plt.cm.ScalarMappable(cmap=cmap, norm=energy_norm)
                 sm.set_array([])
                 cb_bg = fig.colorbar(sm, ax=ax, shrink=0.78, pad=0.02)
             elif mode == "hexbin":
+                gridsize_eff = _adaptive_bins(
+                    hexbin_gridsize,
+                    xs_cat.size,
+                    count_thresh,
+                    min_bins=20,
+                )
                 hb = ax.hexbin(
                     xs_cat / SCALE,
                     ys_cat / SCALE,
                     C=es_cat,
                     reduce_C_function=np.mean,
-                    gridsize=hexbin_gridsize,
+                    gridsize=gridsize_eff,
                     extent=(-r_vis / SCALE, r_vis / SCALE, -r_vis / SCALE, r_vis / SCALE),
                     mincnt=count_thresh,
                     cmap="viridis",
@@ -1035,7 +1222,13 @@ def plot_trajectory_tracks(
                         xlim_grad_km = (xlo, xhi)
                         ylim_grad_km = (ylo, yhi)
             else:
-                bins = max(80, int(round(hexbin_gridsize * 1.25)))
+                bins_req = max(80, int(round(hexbin_gridsize * 1.25)))
+                bins = _adaptive_bins(
+                    bins_req,
+                    xs_cat.size,
+                    count_thresh,
+                    min_bins=24,
+                )
                 e_bg, cnt, xedges, yedges = _grid_mean_energy(xs_cat, ys_cat, es_cat, r_vis, bins)
 
                 if mode in {"kde", "time_video"}:
@@ -1058,6 +1251,15 @@ def plot_trajectory_tracks(
                     time_cube_energy, time_cube_count, time_xedges, time_yedges = _build_time_evolution_cube(
                         xs_list, ys_list, traj_keep, r_vis, bins, time_frames
                     )
+                    time_cube_energy, time_cube_count, time_xedges, time_yedges = _trim_time_cube_to_occupied(
+                        time_cube_energy,
+                        time_cube_count,
+                        time_xedges,
+                        time_yedges,
+                        pad_cells=max(2, bins // 40),
+                    )
+                    xedges = time_xedges
+                    yedges = time_yedges
                     e_bg = time_cube_energy[-1]
 
                 pcm_bg = ax.pcolormesh(
@@ -1091,9 +1293,9 @@ def plot_trajectory_tracks(
                     )
 
             if mode == "legacy":
-                cb_bg.set_label("Orbital Energy (km^2/s^2 ≡ MJ/kg)", fontsize=12)
+                cb_bg.set_label(metric_label, fontsize=12)
             else:
-                cb_bg.set_label("Scattering energy 0.5|DeltaV|^2 (km^2/s^2)", fontsize=12)
+                cb_bg.set_label(metric_label, fontsize=12)
 
         xlo_plot, xhi_plot = xlim_grad_km
         ylo_plot, yhi_plot = ylim_grad_km
@@ -1134,7 +1336,7 @@ def plot_trajectory_tracks(
             for traj in overlay_trajs:
                 x = traj.x_star / SCALE
                 y = traj.y_star / SCALE
-                colour = cmap(energy_norm(traj.orbital_energy))
+                colour = cmap(energy_norm(_trajectory_metric_value(traj)))
                 ax.plot(x, y, lw=0.65, color=colour, alpha=line_alpha, zorder=2)
 
         for x3, y3 in tracks_3b:
@@ -1177,18 +1379,18 @@ def plot_trajectory_tracks(
         ax.set_ylabel("Y relative (10^6 km)", fontsize=12)
         if mode == "legacy":
             ax.set_title(
-                f"Trajectory Tracks Colored by Specific Orbital Energy | {label} Frame",
+                f"Trajectory Tracks Colored by {metric_title.replace('-', ' ')} | {label} Frame",
                 fontsize=13,
                 fontweight="bold",
             )
         else:
             ax.set_title(
-                f"{label} scattering tracks + energy gradient - {sys_name}\n"
+                f"{label} scattering tracks + {metric_short} gradient - {sys_name}\n"
                 f"{len(trajs)} representative trajectories | mode={mode} | "
                 f"overlay={'on' if (overlay_lines and overlay_line_count > 0) else 'off'}"
                 f"{f'({overlay_line_count})' if (overlay_lines and overlay_line_count > 0) else ''} | "
                 f"conf>={count_thresh} | "
-                f"energy=[{e_vmin:.2f}, {e_vmax:.2f}]",
+                f"{metric_short}=[{e_vmin:.2f}, {e_vmax:.2f}]",
                 fontsize=13,
                 fontweight="bold",
             )
@@ -1206,15 +1408,20 @@ def plot_trajectory_tracks(
                     p / f"trajectory_phase_data_{tag}.npz",
                     angle_edges_rad=a_edges,
                     b_edges_km=b_edges,
+                    metric_grid=e_grid_plot,
                     energy_grid=e_grid_plot,
                     heading_grid_deg=np.degrees(np.arctan2(vy_grid_plot, vx_grid_plot)),
                     vx_final_grid=vx_grid_plot,
                     vy_final_grid=vy_grid_plot,
                     count_grid=n_grid,
+                    color_metric=metric_key,
+                    color_metric_label=metric_label,
                     sample_v_approach=sample_v,
                     sample_b=sample_b,
                     sample_angle=sample_a,
                     sample_energy=sample_e,
+                    sample_deltaV=sample_dv,
+                    sample_metric=sample_metric,
                     sample_vx_final_rel=sample_vxf,
                     sample_vy_final_rel=sample_vyf,
                     vstar_vec=np.array([vstar_x, vstar_y], dtype=float),
@@ -1222,6 +1429,8 @@ def plot_trajectory_tracks(
                     body=tag,
                     gradient_mode=mode,
                     confidence_min_count=int(count_thresh),
+                    metric_vmin=float(e_vmin),
+                    metric_vmax=float(e_vmax),
                     energy_vmin=float(e_vmin),
                     energy_vmax=float(e_vmax),
                 )
@@ -1242,6 +1451,10 @@ def plot_trajectory_tracks(
                     y_edges_km=time_yedges,
                     frame_count=int(time_frames),
                     confidence_min_count=int(count_thresh),
+                    color_metric=metric_key,
+                    color_metric_label=metric_label,
+                    metric_vmin=float(e_vmin),
+                    metric_vmax=float(e_vmax),
                     energy_vmin=float(e_vmin),
                     energy_vmax=float(e_vmax),
                     body=tag,
