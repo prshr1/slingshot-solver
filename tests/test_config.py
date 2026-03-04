@@ -52,3 +52,83 @@ class TestConfigModels:
         sys = SystemConfig(name="test", M_star_Msun=1.0, M_planet_Mjup=1.0)
         cfg = FullConfig(system=sys)
         assert cfg.system.name == "test"
+
+
+class TestPipelineSeed:
+    """Test seed field on PipelineConfig."""
+
+    def test_seed_none_by_default(self):
+        from slingshot.config import PipelineConfig
+        p = PipelineConfig()
+        assert p.seed is None
+
+    def test_seed_accepts_int(self):
+        from slingshot.config import PipelineConfig
+        p = PipelineConfig(seed=42)
+        assert p.seed == 42
+
+    def test_seed_rejects_negative(self):
+        from slingshot.config import PipelineConfig
+        with pytest.raises(Exception):
+            PipelineConfig(seed=-1)
+
+
+class TestUncertaintyConfig:
+    """Test UncertaintyConfig model."""
+
+    def test_defaults(self):
+        from slingshot.config import UncertaintyConfig
+        u = UncertaintyConfig()
+        assert u.enabled is False
+        assert u.n_draws > 0
+
+    def test_enabled_with_params(self):
+        from slingshot.config import UncertaintyConfig, ParameterDistConfig
+        u = UncertaintyConfig(
+            enabled=True,
+            n_draws=100,
+            seed=99,
+            parameters={"M_planet_Mjup": ParameterDistConfig(mean=5.2, std=0.4)},
+        )
+        assert u.enabled is True
+        assert "M_planet_Mjup" in u.parameters
+
+
+class TestRobustnessConfig:
+    """Test RobustnessConfig model."""
+
+    def test_defaults(self):
+        from slingshot.config import RobustnessConfig
+        r = RobustnessConfig()
+        assert r.enabled is False
+
+    def test_custom_sweep(self):
+        from slingshot.config import RobustnessConfig
+        r = RobustnessConfig(
+            enabled=True,
+            softening_values=[1e3, 1e4, 1e5],
+        )
+        assert len(r.softening_values) == 3
+
+
+class TestNewSectionsInYAML:
+    """Test that YAML configs with new uncertainty/robustness sections load."""
+
+    def test_interstellar_yaml_loads_new_sections(self):
+        from pathlib import Path
+        from slingshot.config import load_config
+
+        p = Path(__file__).parent.parent / "configs" / "config_interstellar_k432.yaml"
+        if not p.exists():
+            pytest.skip("interstellar config not available")
+        cfg = load_config(str(p))
+        assert cfg.uncertainty is not None
+        assert cfg.uncertainty.enabled is True
+        assert len(cfg.uncertainty.parameters) > 0
+
+    def test_default_yaml_no_uncertainty(self, default_config_path):
+        from slingshot.config import load_config
+        cfg = load_config(str(default_config_path))
+        # Should either be None or disabled
+        if cfg.uncertainty is not None:
+            assert cfg.uncertainty.enabled is False

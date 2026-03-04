@@ -178,10 +178,33 @@ def generate_run_report(
     narrowed: Optional[Dict[str, Any]] = None,
     saved_plots: Optional[List[str]] = None,
     top_indices: Optional[Sequence[int]] = None,
+    uncertainty_results: Optional[Dict[str, Any]] = None,
+    robustness_results: Optional[Dict[str, Any]] = None,
+    tiered: Optional[Dict[str, List]] = None,
+    tier_stats: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> str:
     """Generate ``REPORT.md`` and return markdown text."""
     lines: List[str] = []
     table_active = False
+
+    # ── CSS style block (injected once at top) ──
+    _CSS = """<style>
+.ss-table {width: 94%; font-size: 0.90em; border-collapse: collapse; table-layout: auto; margin: 0 auto;}
+.ss-table th {padding: 6px 8px; text-align: center; border-bottom: 2px solid #555; background: #f7f7f7;}
+.ss-table td {padding: 4px 7px; text-align: center; border-bottom: 1px solid #e2e2e2;}
+.ss-table tr:hover td {background: #f0f6ff;}
+.ss-tier-planet {border-left: 4px solid #2e7d32;}
+.ss-tier-hybrid {border-left: 4px solid #e65100;}
+.ss-tier-star   {border-left: 4px solid #1565c0;}
+.ss-tier-badge {display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; font-weight: 600;}
+.ss-tier-badge.planet {background: #c8e6c9; color: #1b5e20;}
+.ss-tier-badge.hybrid {background: #ffe0b2; color: #bf360c;}
+.ss-tier-badge.star   {background: #bbdefb; color: #0d47a1;}
+.ss-toc {columns: 3; column-gap: 24px; list-style: none; padding: 0; font-size: 0.92em;}
+.ss-toc li {break-inside: avoid; margin-bottom: 3px;}
+.ss-fig-group {margin-top: 20px; padding-top: 10px; border-top: 2px solid #ddd;}
+</style>
+"""
 
     def h1(t: str):
         close_table()
@@ -199,36 +222,29 @@ def generate_run_report(
         close_table()
         lines.append(f"{t}")
 
-    def table_header(*cols: str):
+    def table_header(*cols: str, css_class: str = ""):
         nonlocal table_active
         close_table()
         lines.append('<div align="center">')
-        lines.append(
-            '<table style="width: 94%; font-size: 0.90em; border-collapse: collapse; '
-            'table-layout: auto;">'
-        )
+        cls = f"ss-table {css_class}".strip()
+        lines.append(f'<table class="{cls}">')
         lines.append("<thead><tr>")
         for c in cols:
-            lines.append(
-                f'<th style="padding: 6px 8px; text-align: center; '
-                f'border-bottom: 1px solid #999;">{_html(c)}</th>'
-            )
+            lines.append(f"<th>{_html(c)}</th>")
         lines.append("</tr></thead>")
         lines.append("<tbody>")
         table_active = True
 
-    def table_row(*cols: Any, raw: bool = False):
+    def table_row(*cols: Any, raw: bool = False, row_class: str = ""):
         nonlocal table_active
         if not table_active:
             return
-        lines.append("<tr>")
+        cls_attr = f' class="{row_class}"' if row_class else ""
+        lines.append(f"<tr{cls_attr}>")
         for c in cols:
             txt = str(c)
             rendered = txt if raw else _html(txt)
-            lines.append(
-                f'<td style="padding: 4px 7px; text-align: center; '
-                f'border-bottom: 1px solid #e2e2e2;">{rendered}</td>'
-            )
+            lines.append(f"<td>{rendered}</td>")
         lines.append("</tr>")
 
     def close_table():
@@ -275,6 +291,7 @@ def generate_run_report(
 
     # Header
     h1(f"Slingshot Pipeline Report - {cfg.system.name}")
+    lines.append(_CSS)
     p(f'<p align="center"><strong>Generated:</strong> {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>')
     p(f'<p align="center"><strong>Output directory:</strong> <code>{_html(output_dir)}</code></p>')
     p("")
@@ -447,7 +464,7 @@ def generate_run_report(
         table_row(reason, cnt, f"{pct:.1f}%")
     p("")
 
-    # Candidate summary table (notebook-like)
+    # Candidate summary table — tiered or flat
     h3("Top Candidates Summary")
     ranked: List[tuple[int, Dict[str, Any]]] = []
     if valid_count == 0:
@@ -460,53 +477,127 @@ def generate_run_report(
             key=lambda x: float(x[1].get("delta_v", -np.inf)),
             reverse=True,
         )
-        table_header(
-            "Rank",
-            "MC_idx",
-            "Delta v (km/s)",
-            "Delta v (%)",
-            "Deflection (deg)",
-            "r_min_planet (km)",
-            "r_min_star (km)",
-            "impact_param (km)",
-            "Tag",
-        )
-        for rank, (i, ana) in enumerate(ranked, start=1):
-            mc_idx = int(top_indices[i]) if top_indices is not None and i < len(top_indices) else i
-            enc = ana.get("encounter")
-            r_star = _enc_get(enc, "r_star_min", np.nan)
-            tag = []
-            if best_idx is not None and mc_idx == int(best_idx):
-                tag.append("best_scalar")
-            if best_vec_idx is not None and mc_idx == int(best_vec_idx):
-                tag.append("best_vector")
-            table_row(
-                rank,
-                mc_idx,
-                _fmt_num(ana.get("delta_v"), 3),
-                _fmt_num(ana.get("delta_v_pct"), 2),
-                _fmt_num(ana.get("deflection"), 1),
-                _fmt_num(ana.get("r_min"), 0),
-                _fmt_num(r_star, 0),
-                _fmt_num(ana.get("impact_parameter"), 0),
-                ", ".join(tag) if tag else "-",
-            )
-        p("")
 
+        # ── Tier breakdown summary ──
+        top_n = cfg.tiering.top_n_per_tier if cfg.tiering.enabled else len(ranked)
+        if tiered is not None and tier_stats is not None:
+            from ..analysis.tiering import TIER_ORDER, TIER_PLANET, TIER_HYBRID, TIER_STAR
+            _tier_css = {
+                TIER_PLANET: ("ss-tier-planet", "planet"),
+                TIER_HYBRID: ("ss-tier-hybrid", "hybrid"),
+                TIER_STAR:   ("ss-tier-star",   "star"),
+            }
+
+            h3("Tier Classification Summary")
+            p(
+                "Candidates are classified by ε<sub>planet</sub> / |Δε<sub>monopole</sub>| ratio: "
+                f'<span class="ss-tier-badge planet">planet-dominated</span> (&gt;{cfg.tiering.planet_dominated_threshold}), '
+                f'<span class="ss-tier-badge hybrid">hybrid</span> ({cfg.tiering.hybrid_threshold}–{cfg.tiering.planet_dominated_threshold}), '
+                f'<span class="ss-tier-badge star">star-dominated</span> (&lt;{cfg.tiering.hybrid_threshold}).'
+            )
+            p("")
+            table_header("Tier", "Count", "Δv min (km/s)", "Δv median (km/s)", "Δv max (km/s)", "Ratio range", "Top MC#")
+            for tier in TIER_ORDER:
+                ts = tier_stats.get(tier, {})
+                n = ts.get("count", 0)
+                if n == 0:
+                    table_row(tier, 0, "-", "-", "-", "-", "-")
+                else:
+                    rng = f"{_fmt_num(ts.get('ratio_min'), 2)}–{_fmt_num(ts.get('ratio_max'), 2)}"
+                    table_row(
+                        f'<span class="ss-tier-badge {_tier_css[tier][1]}">{tier}</span>',
+                        n,
+                        _fmt_num(ts.get("dv_min"), 3),
+                        _fmt_num(ts.get("dv_median"), 3),
+                        _fmt_num(ts.get("dv_max"), 3),
+                        rng,
+                        f"MC#{ts.get('top_mc_idx', '?')}",
+                        raw=True,
+                    )
+            p("")
+
+            # ── Per-tier candidate tables (top N per tier) ──
+            for tier in TIER_ORDER:
+                items = tiered.get(tier, [])
+                if not items:
+                    continue
+                css_row, badge = _tier_css[tier]
+                shown = items[:top_n]
+                omitted = len(items) - len(shown)
+                h3(f"{tier.replace('-', ' ').title()} Candidates (top {len(shown)}" +
+                   (f" of {len(items)}" if omitted > 0 else "") + ")")
+                table_header(
+                    "Rank", "MC#", "Δv (km/s)", "Δv (%)", "Deflection (°)",
+                    "r_min planet (km)", "r_min star (km)", "ε/Δε ratio", "Tag",
+                    css_class=css_row,
+                )
+                for rank, mc_idx, ana in shown:
+                    enc = ana.get("encounter")
+                    r_star = _enc_get(enc, "r_star_min", np.nan)
+                    tag = []
+                    if best_idx is not None and mc_idx == int(best_idx):
+                        tag.append("best_scalar")
+                    if best_vec_idx is not None and mc_idx == int(best_vec_idx):
+                        tag.append("best_vector")
+                    ratio_val = ana.get("tier_ratio")
+                    table_row(
+                        rank, mc_idx,
+                        _fmt_num(ana.get("delta_v"), 3),
+                        _fmt_num(ana.get("delta_v_pct"), 2),
+                        _fmt_num(ana.get("deflection"), 1),
+                        _fmt_num(ana.get("r_min"), 0),
+                        _fmt_num(r_star, 0),
+                        _fmt_num(ratio_val, 3) if ratio_val is not None else "n/a",
+                        ", ".join(tag) if tag else "-",
+                    )
+                if omitted > 0:
+                    p(f"<em>({omitted} additional {tier} candidates omitted — see summary.csv)</em>")
+                p("")
+
+        else:
+            # Fallback flat table when tiering is disabled
+            table_header(
+                "Rank", "MC_idx", "Delta v (km/s)", "Delta v (%)",
+                "Deflection (deg)", "r_min_planet (km)", "r_min_star (km)",
+                "impact_param (km)", "Tag",
+            )
+            for rank, (i, ana) in enumerate(ranked[:top_n], start=1):
+                mc_idx = int(top_indices[i]) if top_indices is not None and i < len(top_indices) else i
+                enc = ana.get("encounter")
+                r_star = _enc_get(enc, "r_star_min", np.nan)
+                tag = []
+                if best_idx is not None and mc_idx == int(best_idx):
+                    tag.append("best_scalar")
+                if best_vec_idx is not None and mc_idx == int(best_vec_idx):
+                    tag.append("best_vector")
+                table_row(
+                    rank, mc_idx,
+                    _fmt_num(ana.get("delta_v"), 3),
+                    _fmt_num(ana.get("delta_v_pct"), 2),
+                    _fmt_num(ana.get("deflection"), 1),
+                    _fmt_num(ana.get("r_min"), 0),
+                    _fmt_num(r_star, 0),
+                    _fmt_num(ana.get("impact_parameter"), 0),
+                    ", ".join(tag) if tag else "-",
+                )
+            if len(ranked) > top_n:
+                p(f"<em>({len(ranked) - top_n} additional candidates omitted — see summary.csv)</em>")
+            p("")
+
+        # ── Planet-Frame Diagnostics (top N only) ──
         h3("Planet-Frame Diagnostics (Top Candidates)")
+        pf_show = ranked[:top_n]
         table_header(
-            "MC_idx",
-            "v_rel_in (km/s)",
-            "v_rel_out (km/s)",
-            "Delta v planet frame (km/s)",
-            "planet deflection (deg)",
-            "energy from planet orbit (km^2/s^2)",
-            "Delta eps monopole (km^2/s^2)",
+            "MC#", "Tier",
+            "v_rel_in (km/s)", "v_rel_out (km/s)",
+            "Δv planet frame (km/s)", "planet deflection (°)",
+            "ε_planet (km²/s²)", "Δε_monopole (km²/s²)",
         )
-        for i, ana in ranked:
+        for i, ana in pf_show:
             mc_idx = int(top_indices[i]) if top_indices is not None and i < len(top_indices) else i
+            tier_label = ana.get("tier", "?")
             table_row(
-                mc_idx,
+                mc_idx, tier_label,
                 _fmt_num(ana.get("v_rel_planet_in"), 3),
                 _fmt_num(ana.get("v_rel_planet_out"), 3),
                 _fmt_num(ana.get("delta_v_planet_frame"), 3),
@@ -514,6 +605,8 @@ def generate_run_report(
                 _fmt_num(ana.get("energy_from_planet_orbit"), 6, sci=True),
                 _fmt_num(ana.get("delta_eps_monopole"), 6, sci=True),
             )
+        if len(ranked) > top_n:
+            p(f"<em>({len(ranked) - len(pf_show)} additional rows omitted)</em>")
         p("")
 
     def emit_best_block(title: str, mc_idx: Any, ana: Optional[Dict[str, Any]]):
@@ -633,30 +726,74 @@ def generate_run_report(
             )
         p("")
 
-    # Figure gallery
+    # Figure gallery — section-grouped with TOC
     h2("Figure Gallery")
     if not top_plot_names:
         p("No figures were available for embedding.")
         p("")
     else:
+        # ── Figure grouping ──
+        _DIAG_NAMES = {
+            "mc_summary.png", "rejection_breakdown.png", "parameter_correlations.png",
+            "star_proximity_distribution.png", "energy_cdf.png",
+        }
+        _PUB_NAMES = {
+            "publication_objectives_dashboard.png", "candidate_ranking_diagnostics.png",
+            "best_candidate.png", "velocity_phase_space.png",
+            "planet_frame_diagnostics.png", "multi_candidate_overlay.png",
+            "pareto_front_2d.png", "scalar_vs_vector_tradeoff.png",
+        }
+        _SUPP_NAMES = {
+            "trajectory_tracks_star.png", "trajectory_tracks_planet.png",
+            "barycentric_comparison.png", "planet_frame_comparison.png",
+        }
+
+        def _classify_fig(name: str) -> str:
+            if name in _DIAG_NAMES:
+                return "diagnostic"
+            if name in _PUB_NAMES:
+                return "publication"
+            if name in _SUPP_NAMES:
+                return "supplementary"
+            # Heuristic: poincare/heatmap/oberth → supplementary,
+            # uncertainty/robustness → supplementary
+            lname = name.lower()
+            if any(kw in lname for kw in ("poincare", "heatmap", "oberth", "convergence", "sensitivity", "tornado", "uncertainty")):
+                return "supplementary"
+            if any(kw in lname for kw in ("mc_", "rejection", "star_prox", "parameter_")):
+                return "diagnostic"
+            return "supplementary"
+
         preferred = [
-            "mc_summary.png",
-            "rejection_breakdown.png",
-            "parameter_correlations.png",
-            "publication_objectives_dashboard.png",
-            "candidate_ranking_diagnostics.png",
-            "star_proximity_distribution.png",
-            "energy_cdf.png",
-            "best_candidate.png",
-            "velocity_phase_space.png",
-            "planet_frame_diagnostics.png",
-            "multi_candidate_overlay.png",
-            "trajectory_tracks_star.png",
-            "trajectory_tracks_planet.png",
-            "barycentric_comparison.png",
-            "planet_frame_comparison.png",
+            "mc_summary.png", "rejection_breakdown.png", "parameter_correlations.png",
+            "star_proximity_distribution.png", "energy_cdf.png",
+            "publication_objectives_dashboard.png", "candidate_ranking_diagnostics.png",
+            "best_candidate.png", "velocity_phase_space.png",
+            "planet_frame_diagnostics.png", "multi_candidate_overlay.png",
+            "pareto_front_2d.png", "scalar_vs_vector_tradeoff.png",
+            "trajectory_tracks_star.png", "trajectory_tracks_planet.png",
+            "barycentric_comparison.png", "planet_frame_comparison.png",
         ]
         ordered = [n for n in preferred if n in top_plot_names] + [n for n in top_plot_names if n not in preferred]
+
+        groups = {"diagnostic": [], "publication": [], "supplementary": []}
+        for name in ordered:
+            groups[_classify_fig(name)].append(name)
+
+        # TOC
+        p("<strong>Contents:</strong>")
+        p('<ul class="ss-toc">')
+        fig_idx = 1
+        toc_map: Dict[str, int] = {}
+        for grp_key, grp_label in [("diagnostic", "Diagnostic"), ("publication", "Publication-Quality"), ("supplementary", "Supplementary")]:
+            for name in groups[grp_key]:
+                meta = _figure_meta(name)
+                anchor = f"fig-{fig_idx}"
+                toc_map[name] = fig_idx
+                p(f'<li><a href="#{anchor}">Fig {fig_idx}. {meta["title"]}</a> <small>({grp_label})</small></li>')
+                fig_idx += 1
+        p("</ul>")
+        p("")
 
         def _figure_summary(name: str) -> str:
             if name == "mc_summary.png":
@@ -699,31 +836,146 @@ def generate_run_report(
                 return f"Tracks correspond to narrowed-envelope 2-body baselines (mode={mode})."
             return "See caption for diagnostic context."
 
-        fig_idx = 1
-        for name in ordered:
-            meta = _figure_meta(name)
-            h3(f"Figure {fig_idx}. {meta['title']}")
-            p(
-                f'<p align="center">'
-                f'<img src="{_html(name)}" alt="{_html(f"Figure {fig_idx}: {meta["title"]}")}" '
-                f'style="max-width: 86%; height: auto;" />'
-                f'</p>'
-            )
-            p(
-                f'<p align="center"><em>Figure {fig_idx}. {meta["title"]}. '
-                f'{meta["caption"]}</em></p>'
-            )
-            p(f'<p align="center"><em>Summary:</em> {_html(_figure_summary(name))}</p>')
+        # Emit grouped figures
+        for grp_key, grp_label in [("diagnostic", "Diagnostic Figures"), ("publication", "Publication-Quality Figures"), ("supplementary", "Supplementary Figures")]:
+            figs_in_group = groups[grp_key]
+            if not figs_in_group:
+                continue
+            p(f'<div class="ss-fig-group">')
+            h3(grp_label)
+            for name in figs_in_group:
+                fi = toc_map[name]
+                meta = _figure_meta(name)
+                p(f'<a id="fig-{fi}"></a>')
+                h3(f"Figure {fi}. {meta['title']}")
+                p(
+                    f'<p align="center">'
+                    f'<img src="{_html(name)}" alt="{_html(f"Figure {fi}: {meta["title"]}")}" '
+                    f'style="max-width: 86%; height: auto;" />'
+                    f'</p>'
+                )
+                p(
+                    f'<p align="center"><em>Figure {fi}. {meta["title"]}. '
+                    f'{meta["caption"]}</em></p>'
+                )
+                p(f'<p align="center"><em>Summary:</em> {_html(_figure_summary(name))}</p>')
+                p("")
+            p("</div>")
             p("")
-            fig_idx += 1
 
-    # Plot index
+    # Figure index table
     if top_plot_names:
         h2("Figure Index")
-        table_header("Figure file", "Relative path")
-        for name in top_plot_names:
-            table_row(f'<a href="{_html(name)}">{_html(name)}</a>', _html(name), raw=True)
+        table_header("Fig #", "Group", "File", "Title")
+        for name in ordered:
+            fi = toc_map.get(name, 0)
+            grp = _classify_fig(name)
+            meta = _figure_meta(name)
+            table_row(
+                fi,
+                grp,
+                f'<a href="#{f"fig-{fi}"}">{_html(name)}</a>',
+                meta["title"],
+                raw=True,
+            )
         p("")
+
+    # ── Pareto front analysis ──
+    if cfg.pipeline.select_mode == "pareto" and top_indices is not None and len(valid_rerun) > 0:
+        h2("Pareto Front Analysis")
+        n_front = len(top_indices)
+        p(f"Selection mode: **pareto** — {n_front} non-dominated candidates selected.")
+        obj_txt = ", ".join(
+            f"{o.metric} ({o.sign})" for o in cfg.pipeline.selection_objectives
+        )
+        p(f"Objectives: {obj_txt}")
+        p("")
+
+    # ── Uncertainty analysis ──
+    if uncertainty_results is not None:
+        h2("Uncertainty Analysis")
+
+        ci_df = uncertainty_results.get("confidence_bands")
+        if ci_df is not None and not ci_df.empty:
+            h3("Confidence Intervals (Parameter Posteriors)")
+            # Merge tier info if available
+            _tier_lookup: Dict[int, str] = {}
+            if tiered is not None:
+                for tier_label, items in tiered.items():
+                    for _, mc_idx, _ in items:
+                        _tier_lookup[mc_idx] = tier_label
+            ci_cols = [c for c in ci_df.columns if c.endswith("_median") or c.endswith("_lo68") or c.endswith("_hi68") or c.endswith("_lo95") or c.endswith("_hi95")]
+            has_tiers = bool(_tier_lookup)
+            header_cols = ["candidate"] + (["tier"] if has_tiers else []) + ci_cols[:12]
+            table_header(*header_cols)
+            for _, row in ci_df.iterrows():
+                mc_i = int(row.get("candidate_mc_idx", 0))
+                cells = [str(mc_i)]
+                if has_tiers:
+                    cells.append(_tier_lookup.get(mc_i, "?"))
+                for c in ci_cols[:12]:
+                    cells.append(_fmt_num(row.get(c), 3))
+                table_row(*cells)
+            p("")
+
+        bootstrap = uncertainty_results.get("bootstrap")
+        if bootstrap is not None:
+            stable = bootstrap.get("stable_front", [])
+            n_res = bootstrap.get("n_resample", 0)
+            h3("Pareto Front Stability (Bootstrap)")
+            p(f"Bootstrap resamples: {n_res}")
+            p(f"Stable front members (>=50% membership): {len(stable)} candidates")
+            if stable:
+                p(f"Stable MC indices: {stable[:20]}{'...' if len(stable) > 20 else ''}")
+            p("")
+
+    # ── Robustness analysis ──
+    if robustness_results is not None:
+        h2("Robustness Analysis")
+
+        convergence_df = robustness_results.get("convergence")
+        if convergence_df is not None and not convergence_df.empty:
+            h3("N-Convergence")
+            metric_cols = [c for c in convergence_df.columns
+                           if c not in ("N", "n_ok") and not c.startswith("converged_")]
+            header_cols = ["N", "n_ok"] + metric_cols
+            table_header(*header_cols)
+            for _, row in convergence_df.iterrows():
+                cells = [str(int(row["N"])), str(int(row["n_ok"]))]
+                for c in metric_cols:
+                    cells.append(_fmt_num(row.get(c), 4))
+                table_row(*cells)
+            p("")
+
+            # Convergence verdict
+            for m in metric_cols:
+                conv_col = f"converged_{m}"
+                if conv_col in convergence_df.columns:
+                    converged_at = convergence_df.loc[convergence_df[conv_col] == True, "N"]
+                    if not converged_at.empty:
+                        p(f"- `{m}` converged (<1% change) at N={int(converged_at.iloc[0])}")
+                    else:
+                        p(f"- `{m}` did NOT converge within tested range")
+            p("")
+
+        sensitivity_df = robustness_results.get("sensitivity")
+        if sensitivity_df is not None and not sensitivity_df.empty:
+            h3("Numerical Sensitivity")
+            metric_cols = [c for c in sensitivity_df.columns
+                           if c not in ("parameter", "value", "n_ok")
+                           and not c.startswith("pct_change_")]
+            pct_cols = [c for c in sensitivity_df.columns if c.startswith("pct_change_")]
+            header_cols = ["parameter", "value", "n_ok"] + metric_cols + pct_cols
+            table_header(*header_cols)
+            for _, row in sensitivity_df.iterrows():
+                cells = [str(row["parameter"]), str(row["value"]), str(int(row["n_ok"]))]
+                for c in metric_cols:
+                    cells.append(_fmt_num(row.get(c), 4))
+                for c in pct_cols:
+                    v = row.get(c)
+                    cells.append(f"{v:+.2f}%" if isinstance(v, float) and np.isfinite(v) else "n/a")
+                table_row(*cells)
+            p("")
 
     # Closing summary
     h2("Conclusions")
@@ -731,14 +983,16 @@ def generate_run_report(
         p("No valid candidate could be promoted to the final diagnostics stage.")
     else:
         if best_ana is not None:
+            tier_lbl = best_ana.get("tier", "unknown")
             p(
                 f"- Best scalar-speed outcome: MC#{best_idx}, Delta-v={_fmt_num(best_ana.get('delta_v'), 4)} km/s "
-                f"({_fmt_num(best_ana.get('delta_v_pct'), 2)}%)."
+                f"({_fmt_num(best_ana.get('delta_v_pct'), 2)}%), tier={tier_lbl}."
             )
         if best_vec_ana is not None:
+            tier_lbl = best_vec_ana.get("tier", "unknown")
             p(
                 f"- Best vector-turn outcome: MC#{best_vec_idx}, DeltaV_vec={_fmt_num(best_vec_ana.get('delta_v_vec'), 4)} km/s, "
-                f"0.5*DeltaV^2={_fmt_num(best_vec_ana.get('energy_half_dv_vec_sq'), 4)} km^2/s^2."
+                f"0.5*DeltaV^2={_fmt_num(best_vec_ana.get('energy_half_dv_vec_sq'), 4)} km^2/s^2, tier={tier_lbl}."
             )
         if comparison is not None and "dv_vec_3body" in comparison and "dv_vec_2body_planet" in comparison:
             e3 = 0.5 * float(comparison["dv_vec_3body"]) ** 2
@@ -751,7 +1005,7 @@ def generate_run_report(
 
     # Footer
     p("---")
-    from . import __version__
+    from .. import __version__
     p(f"*slingshot-solver v{__version__}*")
 
     close_table()

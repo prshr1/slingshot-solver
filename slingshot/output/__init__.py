@@ -23,9 +23,6 @@ from .plotting import (
 
 from .plotting_twobody import (
     plot_poincare_heatmaps,
-    plot_scattering_maps,
-    plot_encounter_2d_cartesian,
-    plot_encounter_2d_trajectories,
     plot_oberth_comparison,
     plot_trajectory_tracks,
 )

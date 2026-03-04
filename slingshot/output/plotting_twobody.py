@@ -76,7 +76,7 @@ def _compute_encounter_grid_poincare(
     All units: km-kg-s.
     Returns dict with 2-D arrays: deltaV, theta, vinf, rp, b_grid, alpha_grid.
     """
-    b_arr = np.linspace(b_min, b_max, num_b)
+    b_arr = np.logspace(np.log10(b_min), np.log10(b_max), num_b)
     alpha_arr = np.linspace(alpha_min_rad, alpha_max_rad, num_angle)
     B, A = np.meshgrid(b_arr, alpha_arr, indexing="ij")
 
@@ -91,8 +91,9 @@ def _compute_encounter_grid_poincare(
         for j in range(num_angle):
             b_val = b_arr[i]
             alpha = alpha_arr[j]
-            xm0 = r_far * np.cos(alpha)
-            ym0 = r_far * np.sin(alpha)
+            # Position at r_far along approach direction, offset by b perpendicular
+            xm0 = r_far * np.cos(alpha) - b_val * np.sin(alpha)
+            ym0 = r_far * np.sin(alpha) + b_val * np.cos(alpha)
             um0 = -v_inf * np.cos(alpha) + vstar_x
             vm0 = -v_inf * np.sin(alpha) + vstar_y
             try:
@@ -253,7 +254,7 @@ def plot_poincare_heatmaps(
         alpha_min_rad=0.2, alpha_max_rad=np.pi - 0.2,
         v_inf=v_inf_kms, vstar0=vstar0_kms, r_far=r_far_km,
     )
-    b_plot = grid["B"] / 1e6
+    b_plot = grid["B"]  # keep in km for log-scale y-axis
     a_plot = np.degrees(grid["A"])
 
     figs: List[plt.Figure] = []
@@ -268,10 +269,11 @@ def plot_poincare_heatmaps(
 
     for data, label, cmap, fname in panels:
         fig, ax = plt.subplots(figsize=(14, 8))
-        cf = ax.contourf(a_plot, b_plot, data, levels=30, cmap=cmap)
+        cf = ax.pcolormesh(a_plot, b_plot, data, cmap=cmap, shading="gouraud")
         fig.colorbar(cf, ax=ax, label=label)
+        ax.set_yscale("log")
         ax.set_xlabel("Approach angle alpha (deg)")
-        ax.set_ylabel("Impact parameter b (10^6 km)")
+        ax.set_ylabel("Impact parameter b (km)")
         ax.set_title(f"Poincare map - {label} - {body_label}", fontsize=13, fontweight="bold")
         ax.grid(True, alpha=0.2)
         fig.tight_layout()
@@ -280,16 +282,184 @@ def plot_poincare_heatmaps(
             fig.savefig(Path(save_dir) / fname, dpi=dpi)
 
     fig2, ax = plt.subplots(figsize=(14, 8))
-    cf = ax.contourf(a_plot, b_plot, grid["deltaV"], levels=25, cmap="hot_r")
+    cf = ax.pcolormesh(a_plot, b_plot, grid["deltaV"], cmap="hot_r", shading="gouraud")
     fig2.colorbar(cf, ax=ax, label="Delta-V (km/s)")
     ax.contour(a_plot, b_plot, grid["theta"], levels=10, colors="cyan", linewidths=1.5, alpha=0.6)
+    ax.set_yscale("log")
     ax.set_xlabel("Approach angle alpha (deg)", fontsize=12)
-    ax.set_ylabel("Impact parameter b (10^6 km)", fontsize=12)
+    ax.set_ylabel("Impact parameter b (km)", fontsize=12)
     ax.set_title(f"Delta-V with deflection contours - {body_label}", fontsize=13, fontweight="bold")
     fig2.tight_layout()
     figs.append(fig2)
     if save_dir:
         fig2.savefig(Path(save_dir) / f"poincare_heatmap_combined_{tag}.png", dpi=dpi)
+
+    return figs
+
+
+# ===================================================================
+# 1b. 3-body Poincaré scatter (from MC integration results)
+# ===================================================================
+
+def plot_3body_poincare_scatter(
+    mc: Dict[str, Any],
+    save_dir: Optional[Path] = None,
+    dpi: int = 150,
+    figsize: Tuple[float, float] = (14, 8),
+) -> Dict[str, plt.Figure]:
+    """Scatter plots of 3-body MC outcomes in initial-condition space.
+
+    Unlike the analytic 2-body Poincaré maps, these show the *actual*
+    integrated 3-body results, where the planet's presence breaks the
+    symmetry and creates anisotropic structure.
+
+    Axes: impact parameter b (AU) vs approach angle (deg), coloured by
+    outcome metric (Δv, deflection, energy, star proximity).
+
+    Parameters
+    ----------
+    mc : dict
+        Monte-Carlo results dict from ``run_monte_carlo``.  Must contain
+        ``sampling_params`` with ``impact_param_AU`` and ``angle_in_deg``.
+
+    Returns
+    -------
+    dict  :  filename → Figure
+    """
+    sp = mc.get("sampling_params")
+    if sp is None:
+        return {}
+    b_au = np.asarray(sp.get("impact_param_AU", []))
+    angle_deg = np.asarray(sp.get("angle_in_deg", []))
+    if len(b_au) == 0 or len(angle_deg) == 0:
+        return {}
+
+    ok = np.asarray(mc["ok"], dtype=bool)
+    delta_v = np.asarray(mc["delta_v"])
+    deflection = np.asarray(mc["deflection"])
+    e_from_planet = np.asarray(mc.get("energy_from_planet_orbit",
+                                       np.full(len(ok), np.nan)))
+    r_star_min = np.asarray(mc.get("r_star_min",
+                                    np.full(len(ok), np.nan)))
+    R_star = mc.get("R_star", None)
+    R_p = mc.get("R_p", None)
+
+    # --- optional: v_mag for 3-axis colour (secondary) ---
+    v_mag = np.asarray(sp.get("v_mag_kms", []))
+    has_vmag = len(v_mag) == len(ok)
+
+    # We only plot successful integrations
+    mask = ok & np.isfinite(delta_v)
+    b = b_au[mask]
+    ang = angle_deg[mask]
+    dv = delta_v[mask]
+    defl = deflection[mask]
+    ep = e_from_planet[mask]
+    rstar = r_star_min[mask]
+    vm = v_mag[mask] if has_vmag else None
+
+    if len(b) < 3:
+        return {}
+
+    figs: Dict[str, plt.Figure] = {}
+
+    # ----- helper -----
+    def _make_scatter(colour_data, clabel, cmap, fname, *, vmin=None, vmax=None,
+                      log_y=False, add_hexbin=False):
+        fig, ax = plt.subplots(figsize=figsize)
+        finite = np.isfinite(colour_data)
+        b_f, ang_f, c_f = b[finite], ang[finite], colour_data[finite]
+        if len(c_f) < 3:
+            plt.close(fig)
+            return
+        if vmin is None:
+            vmin = np.nanpercentile(c_f, 2)
+        if vmax is None:
+            vmax = np.nanpercentile(c_f, 98)
+        if add_hexbin and len(c_f) > 200:
+            hb = ax.hexbin(
+                ang_f, b_f, C=c_f, gridsize=40, cmap=cmap,
+                reduce_C_function=np.nanmedian, mincnt=1,
+                linewidths=0.2, edgecolors="gray",
+            )
+            fig.colorbar(hb, ax=ax, label=clabel, shrink=0.85)
+        else:
+            sc = ax.scatter(
+                ang_f, b_f, c=c_f, s=18, cmap=cmap,
+                vmin=vmin, vmax=vmax, alpha=0.75,
+                edgecolors="k", linewidths=0.15, zorder=3,
+            )
+            fig.colorbar(sc, ax=ax, label=clabel, shrink=0.85)
+        if log_y and np.all(b_f > 0):
+            ax.set_yscale("log")
+        ax.set_xlabel("Approach angle (deg)", fontsize=12)
+        ax.set_ylabel("Impact parameter b (AU)", fontsize=12)
+        ax.set_title(
+            f"3-body Poincaré — {clabel}  ({len(c_f)} particles)",
+            fontsize=13, fontweight="bold",
+        )
+        ax.grid(True, alpha=0.2)
+        fig.tight_layout()
+        figs[fname] = fig
+        if save_dir:
+            fig.savefig(Path(save_dir) / fname, dpi=dpi, bbox_inches="tight")
+
+    # 1. Δv scatter
+    _make_scatter(dv, "Δv (km/s)", "hot_r",
+                  "poincare_3body_delta_v.png")
+    # 2. |ΔV_vec| scatter (vector magnitude)
+    dv_vec = np.asarray(mc.get("delta_v_vec", np.full(len(ok), np.nan)))
+    dv_vec_ok = dv_vec[mask]
+    if np.any(np.isfinite(dv_vec_ok)):
+        _make_scatter(dv_vec_ok, "|ΔV_vec| (km/s)", "hot_r",
+                      "poincare_3body_delta_v_vec.png")
+    # 3. Deflection
+    _make_scatter(np.abs(defl), "|Deflection| (deg)", "viridis",
+                  "poincare_3body_deflection.png")
+    # 4. Energy from planet orbit
+    _make_scatter(ep, "ΔE planet orbit (km²/s²)", "coolwarm",
+                  "poincare_3body_energy_planet.png")
+    # 5. Star closest approach
+    if R_star and R_star > 0:
+        _make_scatter(rstar / R_star, "r_star_min / R★", "YlOrRd_r",
+                      "poincare_3body_star_proximity.png")
+    else:
+        _make_scatter(rstar, "r_star_min (km)", "YlOrRd_r",
+                      "poincare_3body_star_proximity.png")
+
+    # 6. If v_mag available: 3-panel (angle vs b colored by Δv) sliced by v_mag
+    if vm is not None and len(np.unique(vm)) > 3:
+        v_terciles = np.percentile(vm, [33, 67])
+        slices = [
+            ("low v", vm <= v_terciles[0]),
+            ("mid v", (vm > v_terciles[0]) & (vm <= v_terciles[1])),
+            ("high v", vm > v_terciles[1]),
+        ]
+        fig_sl, axes_sl = plt.subplots(1, 3, figsize=(figsize[0] * 1.3, figsize[1]),
+                                       sharey=True, sharex=True)
+        vmin_dv = np.nanpercentile(dv, 2)
+        vmax_dv = np.nanpercentile(dv, 98)
+        for ax_i, (label, sl_mask) in zip(axes_sl, slices):
+            b_s, ang_s, dv_s = b[sl_mask], ang[sl_mask], dv[sl_mask]
+            sc = ax_i.scatter(
+                ang_s, b_s, c=dv_s, s=20, cmap="hot_r",
+                vmin=vmin_dv, vmax=vmax_dv, alpha=0.75,
+                edgecolors="k", linewidths=0.15,
+            )
+            ax_i.set_title(f"{label} ({len(dv_s)} pts)", fontsize=11)
+            ax_i.set_xlabel("Approach angle (deg)")
+            ax_i.grid(True, alpha=0.2)
+        axes_sl[0].set_ylabel("Impact parameter b (AU)")
+        fig_sl.colorbar(sc, ax=axes_sl.tolist(), label="Δv (km/s)", shrink=0.8)
+        fig_sl.suptitle(
+            "3-body Poincaré sliced by approach speed",
+            fontsize=13, fontweight="bold",
+        )
+        fig_sl.tight_layout(rect=[0, 0, 0.92, 0.95])
+        fname_sl = "poincare_3body_vmag_slices.png"
+        figs[fname_sl] = fig_sl
+        if save_dir:
+            fig_sl.savefig(Path(save_dir) / fname_sl, dpi=dpi, bbox_inches="tight")
 
     return figs
 
@@ -457,7 +627,7 @@ def plot_oberth_comparison(
 ) -> List[plt.Figure]:
     """Compare no-burn vs Oberth burn with standalone figures."""
     mu = G_KM * M_body_kg
-    b_arr = np.linspace(b_min_km, b_max_km, num_b)
+    b_arr = np.logspace(np.log10(b_min_km), np.log10(b_max_km), num_b)
     alpha_arr = np.linspace(0.1, np.pi - 0.1, num_angle)
     B, A = np.meshgrid(b_arr, alpha_arr, indexing="ij")
 
@@ -471,8 +641,9 @@ def plot_oberth_comparison(
         for j in range(num_angle):
             bval = b_arr[i]
             alpha = alpha_arr[j]
-            xm0 = r_far_km * np.cos(alpha)
-            ym0 = r_far_km * np.sin(alpha)
+            # Position at r_far along approach direction, offset by b perpendicular
+            xm0 = r_far_km * np.cos(alpha) - bval * np.sin(alpha)
+            ym0 = r_far_km * np.sin(alpha) + bval * np.cos(alpha)
             um0 = -v_inf_kms * np.cos(alpha) + vstar_x
             vm0 = -v_inf_kms * np.sin(alpha) + vstar_y
             try:
@@ -484,7 +655,7 @@ def plot_oberth_comparison(
             except Exception:
                 pass
 
-    b_plot = B / 1e6
+    b_plot = B
     a_plot = np.degrees(A)
     figs: List[plt.Figure] = []
     tag = body_label.lower().replace(" ", "_")
@@ -496,10 +667,11 @@ def plot_oberth_comparison(
     ]
     for data, label, cmap, fname in panels:
         fig, ax = plt.subplots(figsize=(14, 8))
-        cf = ax.contourf(a_plot, b_plot, data, levels=25, cmap=cmap)
+        cf = ax.pcolormesh(a_plot, b_plot, data, cmap=cmap, shading="gouraud")
         fig.colorbar(cf, ax=ax, label=label)
+        ax.set_yscale("log")
         ax.set_xlabel("alpha (deg)")
-        ax.set_ylabel("b (10^6 km)")
+        ax.set_ylabel("Impact parameter b (km)")
         ax.set_title(f"Oberth comparison - {label} - {body_label}", fontsize=13, fontweight="bold")
         fig.tight_layout()
         figs.append(fig)
@@ -507,11 +679,12 @@ def plot_oberth_comparison(
             fig.savefig(Path(save_dir) / fname, dpi=dpi)
 
     fig2, ax = plt.subplots(figsize=(14, 8))
-    cf = ax.contourf(a_plot, b_plot, gain, levels=30, cmap="RdYlGn")
+    cf = ax.pcolormesh(a_plot, b_plot, gain, cmap="RdYlGn", shading="gouraud")
     fig2.colorbar(cf, ax=ax, label="Oberth gain (km/s)")
     ax.contour(a_plot, b_plot, dv_no, levels=12, colors="gray", alpha=0.5)
+    ax.set_yscale("log")
     ax.set_xlabel("alpha (deg)", fontsize=12)
-    ax.set_ylabel("b (10^6 km)", fontsize=12)
+    ax.set_ylabel("Impact parameter b (km)", fontsize=12)
     ax.set_title(f"Oberth gain with no-burn contours - {body_label}", fontsize=13, fontweight="bold")
     fig2.tight_layout()
     figs.append(fig2)
@@ -555,7 +728,7 @@ def plot_trajectory_tracks(
     - hexbin_gridsize / kde_sigma_bins: estimator controls
     - time_frames/export_time_data: frame cube export for downstream animation
     """
-    from .twobody import TwoBodyEncounter, TrajectoryResult
+    from ..core.twobody import TwoBodyEncounter, TrajectoryResult
 
     # Keep signature parity; currently unused directly.
     _ = analyses_best

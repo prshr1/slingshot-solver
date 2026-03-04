@@ -702,39 +702,52 @@ def plot_planet_frame_diagnostics(
     r_min_star = np.array(r_min_star)
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 11))
+    idx = np.arange(len(dv_pf))
 
     # planet-frame Δv (should be ~0 for pure 2-body flyby)
     ax = axes[0, 0]
-    ax.bar(range(len(dv_pf)), dv_pf, color="teal", alpha=0.7)
+    _sorted = np.argsort(dv_pf)
+    colors_dv = plt.cm.RdYlGn_r(np.linspace(0.1, 0.9, len(dv_pf)))
+    ax.scatter(idx, dv_pf[_sorted], c=colors_dv, s=28, edgecolors="k", linewidths=0.3, zorder=3)
     ax.axhline(0, color="gray", lw=0.8)
-    ax.set_xlabel("Candidate #")
+    ax.set_xlabel("Candidate (sorted by Δv)")
     ax.set_ylabel("Δv (planet frame) [km/s]")
     ax.set_title("Planet-frame speed change (should ≈ 0 for pure flyby)")
+    ax.grid(True, alpha=0.25, axis="y")
 
     # planet-frame deflection
     ax = axes[0, 1]
-    ax.bar(range(len(defl_pf)), defl_pf, color="darkorange", alpha=0.7)
-    ax.set_xlabel("Candidate #")
+    _sorted = np.argsort(defl_pf)
+    colors_d = plt.cm.hot_r(np.linspace(0.1, 0.9, len(defl_pf)))
+    ax.scatter(idx, defl_pf[_sorted], c=colors_d, s=28, edgecolors="k", linewidths=0.3, zorder=3)
+    ax.set_xlabel("Candidate (sorted)")
     ax.set_ylabel("Deflection (°)")
     ax.set_title("Planet-frame deflection")
+    ax.grid(True, alpha=0.25, axis="y")
 
     # energy from planet orbit
     ax = axes[1, 0]
-    ax.bar(range(len(e_planet)), e_planet, color="royalblue", alpha=0.7)
+    _sorted = np.argsort(e_planet)
+    colors_e = plt.cm.coolwarm(np.linspace(0.1, 0.9, len(e_planet)))
+    ax.scatter(idx, e_planet[_sorted], c=colors_e, s=28, edgecolors="k", linewidths=0.3, zorder=3)
     ax.axhline(0, color="gray", lw=0.8)
-    ax.set_xlabel("Candidate #")
+    ax.set_xlabel("Candidate (sorted by ΔE)")
     ax.set_ylabel("ΔE from planet orbit [km²/s²]")
     ax.set_title("Energy extracted from planet orbital KE")
+    ax.grid(True, alpha=0.25, axis="y")
 
     # star closest approach
     ax = axes[1, 1]
     vals = r_min_star / R_star_km
-    ax.bar(range(len(vals)), vals, color="crimson", alpha=0.7)
+    _sorted = np.argsort(vals)
+    colors_r = plt.cm.YlOrRd_r(np.linspace(0.1, 0.9, len(vals)))
+    ax.scatter(idx, vals[_sorted], c=colors_r, s=28, edgecolors="k", linewidths=0.3, zorder=3)
     ax.axhline(1.0, color="gold", ls="--", lw=1.5, label="R★ surface")
-    ax.set_xlabel("Candidate #")
+    ax.set_xlabel("Candidate (sorted)")
     ax.set_ylabel("r_star_min / R★")
     ax.set_title("Star closest approach per candidate")
     ax.legend()
+    ax.grid(True, alpha=0.25, axis="y")
 
     fig.suptitle("Planet-frame diagnostics", fontsize=14, fontweight="bold")
     fig.tight_layout()
@@ -769,48 +782,61 @@ def plot_planet_frame_diagnostics_individual(
     defl_pf = np.array(defl_pf)
     e_planet = np.array(e_planet)
     vals = np.array(r_min_star) / R_star_km
-    idx = np.arange(len(dv_pf))
+    n = len(dv_pf)
     figs: Dict[str, plt.Figure] = {}
 
-    fig, ax = plt.subplots(figsize=figsize)
-    ax.bar(idx, dv_pf, color="teal", alpha=0.7)
-    ax.axhline(0, color="gray", lw=0.8)
-    ax.set_xlabel("Candidate #")
-    ax.set_ylabel("Delta-v (planet frame) [km/s]")
-    ax.set_title("Planet-frame speed change (should ~0 for pure flyby)", fontweight="bold")
-    ax.grid(True, alpha=0.3, axis="y")
-    fig.tight_layout()
-    figs["planet_frame_diagnostics_speed_change.png"] = fig
+    def _scatter_strip(data, ylabel, title, cmap_name, fname, ref_line=None, ref_label=None):
+        """Sorted scatter with marginal violin for planet-frame quantity."""
+        fig, (ax_main, ax_hist) = plt.subplots(
+            1, 2, figsize=figsize, width_ratios=[4, 1], sharey=True,
+        )
+        order = np.argsort(data)
+        sorted_data = data[order]
+        colors = plt.get_cmap(cmap_name)(np.linspace(0.15, 0.85, n))
+        ax_main.scatter(
+            np.arange(n), sorted_data, c=colors, s=36,
+            edgecolors="k", linewidths=0.3, zorder=3,
+        )
+        if ref_line is not None:
+            ax_main.axhline(ref_line, color="gold", ls="--", lw=1.5, label=ref_label)
+            ax_main.legend(fontsize=9)
+        ax_main.set_xlabel("Candidate (sorted)", fontsize=11)
+        ax_main.set_ylabel(ylabel, fontsize=11)
+        ax_main.set_title(title, fontweight="bold", fontsize=12)
+        ax_main.grid(True, alpha=0.25, axis="y")
+        # Marginal violin
+        finite = data[np.isfinite(data)]
+        if len(finite) > 1:
+            parts = ax_hist.violinplot(finite, showmedians=True, showextrema=True)
+            for pc in parts.get("bodies", []):
+                pc.set_facecolor(plt.get_cmap(cmap_name)(0.5))
+                pc.set_alpha(0.45)
+        ax_hist.set_xlabel("Density")
+        ax_hist.tick_params(labelleft=False)
+        fig.tight_layout()
+        figs[fname] = fig
 
-    fig, ax = plt.subplots(figsize=figsize)
-    ax.bar(np.arange(len(defl_pf)), defl_pf, color="darkorange", alpha=0.7)
-    ax.set_xlabel("Candidate #")
-    ax.set_ylabel("Deflection (deg)")
-    ax.set_title("Planet-frame deflection", fontweight="bold")
-    ax.grid(True, alpha=0.3, axis="y")
-    fig.tight_layout()
-    figs["planet_frame_diagnostics_deflection.png"] = fig
-
-    fig, ax = plt.subplots(figsize=figsize)
-    ax.bar(np.arange(len(e_planet)), e_planet, color="royalblue", alpha=0.7)
-    ax.axhline(0, color="gray", lw=0.8)
-    ax.set_xlabel("Candidate #")
-    ax.set_ylabel("Delta-E from planet orbit [km^2/s^2]")
-    ax.set_title("Energy extracted from planet orbital KE", fontweight="bold")
-    ax.grid(True, alpha=0.3, axis="y")
-    fig.tight_layout()
-    figs["planet_frame_diagnostics_energy_extracted.png"] = fig
-
-    fig, ax = plt.subplots(figsize=figsize)
-    ax.bar(np.arange(len(vals)), vals, color="crimson", alpha=0.7)
-    ax.axhline(1.0, color="gold", ls="--", lw=1.5, label="R_star surface")
-    ax.set_xlabel("Candidate #")
-    ax.set_ylabel("r_star_min / R_star")
-    ax.set_title("Star closest approach per candidate", fontweight="bold")
-    ax.legend()
-    ax.grid(True, alpha=0.3, axis="y")
-    fig.tight_layout()
-    figs["planet_frame_diagnostics_star_closest_approach.png"] = fig
+    _scatter_strip(
+        dv_pf, "Delta-v (planet frame) [km/s]",
+        "Planet-frame speed change (should ~0 for pure flyby)",
+        "RdYlGn_r", "planet_frame_diagnostics_speed_change.png",
+    )
+    _scatter_strip(
+        defl_pf, "Deflection (deg)",
+        "Planet-frame deflection",
+        "hot_r", "planet_frame_diagnostics_deflection.png",
+    )
+    _scatter_strip(
+        e_planet, "Delta-E from planet orbit [km^2/s^2]",
+        "Energy extracted from planet orbital KE",
+        "coolwarm", "planet_frame_diagnostics_energy_extracted.png",
+    )
+    _scatter_strip(
+        vals, "r_star_min / R_star",
+        "Star closest approach per candidate",
+        "YlOrRd_r", "planet_frame_diagnostics_star_closest_approach.png",
+        ref_line=1.0, ref_label="R_star surface",
+    )
 
     return figs
 
@@ -1706,3 +1732,285 @@ def plot_candidate_ranking_diagnostics_individual(
     figs["candidate_ranking_closest_approach.png"] = fig
 
     return figs
+
+
+# ===================================================================
+# Paper-quality multi-objective plots
+# ===================================================================
+
+def plot_pareto_front_2d(
+    mc: Dict[str, Any],
+    pareto_indices: Optional[np.ndarray] = None,
+    objectives: Optional[List[Dict[str, Any]]] = None,
+    figsize: Tuple[float, float] = (14.0, 5.0),
+) -> Dict[str, plt.Figure]:
+    """Pairwise scatter of 3 objectives with Pareto front highlighted.
+
+    Parameters
+    ----------
+    mc : dict
+        MC results dict.
+    pareto_indices : array-like, optional
+        MC-index array of Pareto-selected candidates.
+    objectives : list of dict, optional
+        Objective descriptors (``metric``, ``sign``).  Default: the
+        standard triple (delta_v, delta_v_vec, energy_from_planet_orbit).
+
+    Returns
+    -------
+    dict
+        ``{filename: Figure}`` — one 3-panel figure.
+    """
+    from ..analysis.monte_carlo import resolve_metric_array
+
+    if objectives is None:
+        objectives = [
+            {"metric": "delta_v", "sign": "maximize"},
+            {"metric": "delta_v_vec", "sign": "maximize"},
+            {"metric": "energy_from_planet_orbit", "sign": "maximize"},
+        ]
+
+    ok = np.asarray(mc["ok"])
+    ok_idx = np.where(ok)[0]
+    if ok_idx.size == 0:
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.text(0.5, 0.5, "No valid data", ha="center", va="center",
+                transform=ax.transAxes)
+        return {"pareto_front_2d.png": fig}
+
+    # Extract metric arrays for ok particles
+    obj_names = [o["metric"] for o in objectives]
+    obj_data = {}
+    for name in obj_names:
+        arr = resolve_metric_array(mc, name)
+        obj_data[name] = arr[ok_idx]
+
+    is_pareto = np.zeros(ok_idx.size, dtype=bool)
+    if pareto_indices is not None:
+        pareto_set = set(int(i) for i in pareto_indices)
+        for j, mc_idx in enumerate(ok_idx):
+            if int(mc_idx) in pareto_set:
+                is_pareto[j] = True
+
+    pairs = [
+        (0, 1), (0, 2), (1, 2),
+    ]
+
+    fig, axes = plt.subplots(1, 3, figsize=figsize)
+    for ax, (i, j) in zip(axes, pairs):
+        xi = obj_data[obj_names[i]]
+        xj = obj_data[obj_names[j]]
+        dominated = ~is_pareto
+        ax.scatter(xi[dominated], xj[dominated], s=8, alpha=0.25, c="gray", label="Dominated")
+        if is_pareto.any():
+            ax.scatter(xi[is_pareto], xj[is_pareto], s=30, alpha=0.85, c="tab:red",
+                       edgecolors="k", linewidths=0.5, label="Pareto front", zorder=5)
+        ax.set_xlabel(obj_names[i].replace("_", " "), fontsize=9)
+        ax.set_ylabel(obj_names[j].replace("_", " "), fontsize=9)
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=7)
+
+    fig.suptitle("Pareto Front — Pairwise Objective Scatter", fontweight="bold")
+    fig.tight_layout()
+    return {"pareto_front_2d.png": fig}
+
+
+def plot_scalar_vs_vector_tradeoff(
+    mc: Dict[str, Any],
+    pareto_indices: Optional[np.ndarray] = None,
+    figsize: Tuple[float, float] = (10.0, 7.0),
+) -> Dict[str, plt.Figure]:
+    r"""Scalar :math:`\Delta|v|` vs vector :math:`|\Delta\mathbf{v}|` coloured by :math:`\Delta\varepsilon`.
+
+    Returns
+    -------
+    dict
+        ``{filename: Figure}``.
+    """
+    from ..analysis.monte_carlo import resolve_metric_array
+
+    ok = np.asarray(mc["ok"])
+    ok_idx = np.where(ok)[0]
+    if ok_idx.size == 0:
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.text(0.5, 0.5, "No valid data", ha="center", va="center",
+                transform=ax.transAxes)
+        return {"scalar_vs_vector_tradeoff.png": fig}
+
+    dv_scalar = resolve_metric_array(mc, "delta_v")[ok_idx]
+    dv_vec = resolve_metric_array(mc, "delta_v_vec")[ok_idx]
+    energy = resolve_metric_array(mc, "energy_from_planet_orbit")[ok_idx]
+
+    fig, ax = plt.subplots(figsize=figsize)
+    sc = ax.scatter(dv_scalar, dv_vec, c=energy, s=12, alpha=0.5, cmap="viridis")
+    cb = fig.colorbar(sc, ax=ax, label="Energy from planet orbit (km²/s²)")
+
+    if pareto_indices is not None:
+        pareto_set = set(int(i) for i in pareto_indices)
+        is_pareto = np.array([int(idx) in pareto_set for idx in ok_idx])
+        if is_pareto.any():
+            ax.scatter(dv_scalar[is_pareto], dv_vec[is_pareto],
+                       s=60, facecolors="none", edgecolors="red", linewidths=1.5,
+                       label="Pareto front", zorder=5)
+            ax.legend(fontsize=9)
+
+    ax.set_xlabel("Scalar Δ|v| (km/s)", fontsize=11)
+    ax.set_ylabel("|ΔV_vec| (km/s)", fontsize=11)
+    ax.set_title("Scalar vs Vector Speed-Change Tradeoff", fontweight="bold")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return {"scalar_vs_vector_tradeoff.png": fig}
+
+
+def plot_convergence_curves(
+    convergence_df,
+    metric_names: Optional[List[str]] = None,
+    figsize: Tuple[float, float] = (12.0, 5.0),
+) -> Dict[str, plt.Figure]:
+    """Metric vs N_particles with convergence plateau annotation.
+
+    Parameters
+    ----------
+    convergence_df : DataFrame
+        Output of ``robustness.run_convergence_test``.
+    metric_names : list of str, optional
+        Metrics to plot.
+
+    Returns
+    -------
+    dict
+        ``{filename: Figure}``.
+    """
+    if metric_names is None:
+        metric_names = [c for c in convergence_df.columns
+                        if c not in ("N", "n_ok")
+                        and not c.startswith("converged_")]
+
+    n_metrics = len(metric_names)
+    fig, axes = plt.subplots(1, n_metrics, figsize=figsize, squeeze=False)
+    axes = axes.flatten()
+
+    N_vals = convergence_df["N"].values
+
+    for ax, m in zip(axes, metric_names):
+        vals = convergence_df[m].values
+        ax.plot(N_vals, vals, "o-", lw=1.5, markersize=6)
+
+        conv_col = f"converged_{m}"
+        if conv_col in convergence_df.columns:
+            converged = convergence_df[conv_col].values
+            for i, (n, v, c) in enumerate(zip(N_vals, vals, converged)):
+                if c:
+                    ax.axvline(n, color="green", alpha=0.3, ls="--")
+
+        ax.set_xlabel("N particles")
+        ax.set_ylabel(m.replace("_", " "))
+        ax.set_title(m.replace("_", " "), fontweight="bold", fontsize=10)
+        ax.grid(True, alpha=0.3)
+
+    fig.suptitle("N-Convergence Test", fontweight="bold", fontsize=12)
+    fig.tight_layout()
+    return {"convergence_curves.png": fig}
+
+
+def plot_uncertainty_bands(
+    posterior_df,
+    metric_names: Optional[List[str]] = None,
+    figsize: Tuple[float, float] = (14.0, 5.0),
+) -> Dict[str, plt.Figure]:
+    """Violin/box plots of metrics across posterior draws.
+
+    Parameters
+    ----------
+    posterior_df : DataFrame
+        Output of ``uncertainty.run_parameter_posterior_mc``.
+    metric_names : list of str, optional
+        Metrics to plot.
+
+    Returns
+    -------
+    dict
+        ``{filename: Figure}``.
+    """
+    if metric_names is None:
+        exclude = {"draw", "candidate_mc_idx"}
+        metric_names = [
+            c for c in posterior_df.columns
+            if c not in exclude and not c.startswith("drawn_")
+            and posterior_df[c].dtype.kind == "f"
+        ]
+
+    n_metrics = len(metric_names)
+    fig, axes = plt.subplots(1, n_metrics, figsize=figsize, squeeze=False)
+    axes = axes.flatten()
+
+    candidates = sorted(posterior_df["candidate_mc_idx"].unique())
+
+    for ax, m in zip(axes, metric_names):
+        data = []
+        labels = []
+        for cand in candidates:
+            vals = posterior_df.loc[posterior_df["candidate_mc_idx"] == cand, m].dropna().values
+            if len(vals) > 0:
+                data.append(vals)
+                labels.append(f"MC#{cand}")
+        if data:
+            parts = ax.violinplot(data, showmedians=True, showextrema=True)
+            ax.set_xticks(range(1, len(labels) + 1))
+            ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=7)
+        ax.set_ylabel(m.replace("_", " "))
+        ax.set_title(m.replace("_", " "), fontweight="bold", fontsize=10)
+        ax.grid(True, alpha=0.3)
+
+    fig.suptitle("Uncertainty Bands (Parameter Posteriors)", fontweight="bold", fontsize=12)
+    fig.tight_layout()
+    return {"uncertainty_bands.png": fig}
+
+
+def plot_sensitivity_tornado(
+    sensitivity_df,
+    metric_name: str = "delta_v",
+    figsize: Tuple[float, float] = (10.0, 6.0),
+) -> Dict[str, plt.Figure]:
+    """Horizontal bar chart showing metric sensitivity to each parameter.
+
+    Parameters
+    ----------
+    sensitivity_df : DataFrame
+        Output of ``robustness.run_numerical_sensitivity``.
+    metric_name : str
+        Which metric's % change to visualize.
+
+    Returns
+    -------
+    dict
+        ``{filename: Figure}``.
+    """
+    pct_col = f"pct_change_{metric_name}"
+    if pct_col not in sensitivity_df.columns:
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.text(0.5, 0.5, f"No '{pct_col}' column", ha="center", va="center",
+                transform=ax.transAxes)
+        return {"sensitivity_tornado.png": fig}
+
+    df = sensitivity_df[sensitivity_df["parameter"] != "reference"].copy()
+    if df.empty:
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.text(0.5, 0.5, "No sensitivity data", ha="center", va="center",
+                transform=ax.transAxes)
+        return {"sensitivity_tornado.png": fig}
+
+    df["label"] = df["parameter"] + "=" + df["value"].astype(str)
+    df = df.sort_values(pct_col, key=abs, ascending=True)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    colors = ["tab:red" if v < 0 else "tab:blue" for v in df[pct_col]]
+    ax.barh(range(len(df)), df[pct_col].values, color=colors, alpha=0.8)
+    ax.set_yticks(range(len(df)))
+    ax.set_yticklabels(df["label"].values, fontsize=8)
+    ax.set_xlabel(f"% change in {metric_name.replace('_', ' ')}")
+    ax.set_title(f"Sensitivity Tornado — {metric_name.replace('_', ' ')}", fontweight="bold")
+    ax.axvline(0, color="k", lw=0.8)
+    ax.grid(True, alpha=0.3, axis="x")
+    fig.tight_layout()
+    return {f"sensitivity_tornado_{metric_name}.png": fig}

@@ -270,6 +270,13 @@ class PipelineConfig(BaseModel):
         description="Normalization method for weighted-mode scalarization and Pareto tie-breaks",
     )
     
+    # Reproducibility
+    seed: Optional[int] = Field(
+        default=None, ge=0,
+        description="Random seed for Monte Carlo sampling. None = non-deterministic. "
+                    "Set to a fixed integer (e.g. 42) for reproducible paper runs.",
+    )
+
     # Parallelization
     n_parallel: Optional[int] = Field(default=None, ge=1, description="Number of parallel workers (None = auto-detect)")
 
@@ -297,8 +304,6 @@ class VisualizationConfig(BaseModel):
             "generate_publication_dashboard": True,
             "generate_candidate_ranking_plot": True,
             "split_subplot_figures": True,
-            "generate_2body_heatmaps": True,
-            "generate_scattering_maps": True,
             "generate_poincare_maps": True,
             "generate_oberth_maps": False,
             "heatmap_grid_resolution": 60,
@@ -346,12 +351,12 @@ class VisualizationConfig(BaseModel):
 
     # 2-body diagnostic plot toggles
     generate_2body_heatmaps: bool = Field(
-        default=True,
-        description="Generate Cartesian (x,y) ΔV/deflection heatmaps for 2-body encounters"
+        default=False,
+        description="Deprecated toggle (2D encounter maps removed from generation pipeline)"
     )
     generate_scattering_maps: bool = Field(
-        default=True,
-        description="Generate polar (b, θ_b) scattering maps with trajectory overlays"
+        default=False,
+        description="Deprecated toggle (scattering maps removed from generation pipeline)"
     )
     generate_poincare_maps: bool = Field(
         default=True,
@@ -430,6 +435,10 @@ class VisualizationConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_trajectory_energy_norm(self):
+        # Hard-disable deprecated 2D/scattering map generation toggles.
+        self.generate_2body_heatmaps = False
+        self.generate_scattering_maps = False
+
         if self.trajectory_energy_norm_mode == "fixed":
             if self.trajectory_energy_vmin is None or self.trajectory_energy_vmax is None:
                 raise ValueError(
@@ -491,6 +500,96 @@ class TwoBodyConfig(BaseModel):
     output_dir: str = Field(default="results/two_body", description="Output directory")
 
 
+class ParameterDistConfig(BaseModel):
+    """Single parameter posterior distribution (Gaussian)."""
+    mean: float = Field(description="Posterior mean")
+    std: float = Field(ge=0.0, description="Posterior standard deviation")
+
+
+class UncertaintyConfig(BaseModel):
+    """Configuration for parameter-posterior uncertainty propagation."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable uncertainty propagation analysis",
+    )
+    n_draws: int = Field(
+        default=50, ge=1, le=10000,
+        description="Number of posterior parameter draws",
+    )
+    seed: Optional[int] = Field(
+        default=None, ge=0,
+        description="Random seed for posterior sampling (None = non-deterministic)",
+    )
+    bootstrap_n_resample: int = Field(
+        default=200, ge=10, le=10000,
+        description="Number of bootstrap resamples for Pareto stability analysis",
+    )
+    parameters: Dict[str, ParameterDistConfig] = Field(
+        default_factory=dict,
+        description="Parameter posteriors keyed by SystemConfig field name, "
+                    "e.g. {'M_planet_Mjup': {'mean': 5.2, 'std': 0.4}}",
+    )
+
+
+class RobustnessConfig(BaseModel):
+    """Configuration for numerical robustness / sensitivity analysis."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable robustness / sensitivity analysis",
+    )
+    seed: Optional[int] = Field(
+        default=None, ge=0,
+        description="Random seed for robustness runs (None = use pipeline seed)",
+    )
+    convergence_N: List[int] = Field(
+        default=[500, 1000, 2000, 4000, 8000],
+        description="Particle counts for N-convergence test",
+    )
+    softening_values: List[float] = Field(
+        default=[0.0, 10.0, 50.0, 100.0, 500.0, 1000.0],
+        description="Softening lengths (km) to sweep",
+    )
+    tolerance_values: List[float] = Field(
+        default=[1e-10, 1e-11, 1e-12, 1e-13],
+        description="Solver tolerance values to sweep (applied to both rtol and atol)",
+    )
+    clearance_values: List[float] = Field(
+        default=[1.5, 2.0, 3.0, 5.0],
+        description="Star min clearance (R_star) values to sweep",
+    )
+    flyby_values: List[float] = Field(
+        default=[0.3, 0.5, 0.8, 1.0, 3.0, 5.0],
+        description="Flyby r_min (Hill radii) values to sweep",
+    )
+    metric_names: List[str] = Field(
+        default=["delta_v", "delta_v_vec", "energy_from_planet_orbit"],
+        description="Metrics to track across sensitivity sweeps",
+    )
+
+
+class TieringConfig(BaseModel):
+    """Physics-based candidate tiering thresholds.
+
+    Candidates are classified by the ratio ε_planet / |Δε_monopole|:
+      - planet-dominated  (ratio > planet_dominated_threshold)
+      - hybrid            (hybrid_threshold ≤ ratio ≤ planet_dominated_threshold)
+      - star-dominated    (ratio < hybrid_threshold)
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = Field(default=True, description="Enable tier classification in report / notebook")
+    planet_dominated_threshold: float = Field(default=2.0, description="Min ratio for planet-dominated tier")
+    hybrid_threshold: float = Field(default=0.5, description="Min ratio for hybrid tier")
+    top_n_per_tier: int = Field(default=10, description="Max candidates shown per tier in report tables")
+
+
 class FullConfig(BaseModel):
     """Complete configuration for slingshot solver pipeline."""
 
@@ -505,6 +604,9 @@ class FullConfig(BaseModel):
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
     visualization: VisualizationConfig = Field(default_factory=VisualizationConfig)
     two_body: Optional[TwoBodyConfig] = Field(default=None, description="2-body scan config")
+    uncertainty: UncertaintyConfig = Field(default_factory=UncertaintyConfig, description="Uncertainty propagation config")
+    robustness: RobustnessConfig = Field(default_factory=RobustnessConfig, description="Robustness / sensitivity analysis config")
+    tiering: TieringConfig = Field(default_factory=TieringConfig, description="Physics-based candidate tiering config")
 
 
 def load_config(config_path: str) -> FullConfig:

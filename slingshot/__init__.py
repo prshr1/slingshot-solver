@@ -114,9 +114,6 @@ from .output.plotting import (
 
 from .output.plotting_twobody import (
     plot_poincare_heatmaps,
-    plot_scattering_maps,
-    plot_encounter_2d_cartesian,
-    plot_encounter_2d_trajectories,
     plot_oberth_comparison,
     plot_trajectory_tracks,
 )
@@ -169,8 +166,7 @@ __all__ = [
     'plot_multi_candidate_overlay', 'plot_rejection_breakdown',
     'plot_parameter_correlations', 'plot_energy_cdf',
     # Plotting — 2-body parameter-space
-    'plot_poincare_heatmaps', 'plot_scattering_maps',
-    'plot_encounter_2d_cartesian', 'plot_encounter_2d_trajectories',
+    'plot_poincare_heatmaps',
     'plot_oberth_comparison', 'plot_trajectory_tracks',
     # Animation
     'animate_trajectory', 'animate_phase_space', 'generate_all_animations',

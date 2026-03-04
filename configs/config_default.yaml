@@ -51,6 +51,7 @@ pipeline:
   select_mode: single  # "single", "pareto", "weighted"
   select_metric: bary_delta_v_pct  # e.g. "bary_delta_v", "delta_v_vec", "energy_from_planet_orbit"
   select_sign: maximize  # "maximize", "minimize", "abs"
+  seed: null              # null = non-deterministic; set integer for reproducibility
   selection_objectives:  # used by pareto/weighted modes
     - metric: bary_delta_v
       sign: maximize

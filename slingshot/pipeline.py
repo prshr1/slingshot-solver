@@ -48,6 +48,13 @@ from .analysis.baselines import compare_3body_with_baselines
 from .analysis.narrowed_baselines import compute_narrowed_baselines
 from .analysis.comparison import compare_2body_3body, print_comparison
 from .output.animation import generate_all_animations
+from .output.plotting import (
+    plot_pareto_front_2d,
+    plot_scalar_vs_vector_tradeoff,
+    plot_convergence_curves,
+    plot_uncertainty_bands,
+    plot_sensitivity_tornado,
+)
 
 
 # ===================================================================
@@ -124,6 +131,9 @@ def phase_monte_carlo(cfg: FullConfig, verbose: bool = True) -> Dict[str, Any]:
     if verbose:
         print(f"═══ Phase 1: Monte Carlo ({cfg.pipeline.N_particles} particles) ═══")
 
+    # Build reproducible RNG from config seed (if set)
+    rng = np.random.default_rng(cfg.pipeline.seed)
+
     mc = run_monte_carlo(
         N=cfg.pipeline.N_particles,
         t_span=(0.0, cfg.pipeline.t_mc_max_sec),
@@ -133,6 +143,7 @@ def phase_monte_carlo(cfg: FullConfig, verbose: bool = True) -> Dict[str, Any]:
         frame="barycentric",
         sampling_mode=cfg.sampling.mode,
         n_parallel=cfg.pipeline.n_parallel,
+        rng=rng,
         verbose=verbose,
         # Sampling bounds
         v_mag_min=cfg.sampling.v_mag_min_kms,
@@ -432,6 +443,131 @@ def phase_baselines(
     return {"narrowed": narrowed, "comparison": comp}
 
 
+def phase_uncertainty(
+    cfg: FullConfig,
+    mc: Dict[str, Any],
+    top_idx: np.ndarray,
+    verbose: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """Phase 5b: Uncertainty propagation (opt-in).
+
+    Returns
+    -------
+    dict or None
+        ``posterior_df``, ``confidence_bands``, ``bootstrap``.
+    """
+    ucfg = cfg.uncertainty
+    if not ucfg.enabled:
+        if verbose:
+            print(f"\n═══ Phase 5b: Uncertainty — SKIPPED (disabled) ═══")
+        return None
+
+    if verbose:
+        print(f"\n═══ Phase 5b: Uncertainty propagation ({ucfg.n_draws} draws) ═══")
+
+    from .analysis.uncertainty import (
+        run_parameter_posterior_mc,
+        compute_confidence_bands,
+        bootstrap_pareto_stability,
+    )
+
+    # Convert ParameterDistConfig objects → plain dicts
+    param_dists = {
+        k: {"mean": v.mean, "std": v.std}
+        for k, v in ucfg.parameters.items()
+    } if ucfg.parameters else None
+
+    posterior_df = run_parameter_posterior_mc(
+        base_cfg=cfg,
+        mc_results=mc,
+        top_indices=top_idx,
+        n_draws=ucfg.n_draws,
+        seed=ucfg.seed,
+        param_dists=param_dists,
+        verbose=verbose,
+    )
+
+    ci_df = compute_confidence_bands(posterior_df)
+
+    if verbose:
+        print(f"  Posterior draws: {len(posterior_df)} rows, {len(ci_df)} candidates")
+
+    # Bootstrap Pareto stability
+    objectives = [
+        {"metric": o.metric, "sign": o.sign, "weight": o.weight}
+        for o in cfg.pipeline.selection_objectives
+    ]
+    bootstrap = bootstrap_pareto_stability(
+        mc, objectives=objectives,
+        n_resample=ucfg.bootstrap_n_resample,
+        seed=ucfg.seed,
+        top_frac=cfg.pipeline.top_frac,
+        min_top=cfg.pipeline.min_top,
+    )
+
+    if verbose:
+        stable = bootstrap.get("stable_front", [])
+        print(f"  Bootstrap: {len(stable)} stable front members (≥50% membership)")
+
+    return {
+        "posterior_df": posterior_df,
+        "confidence_bands": ci_df,
+        "bootstrap": bootstrap,
+    }
+
+
+def phase_robustness(
+    cfg: FullConfig,
+    verbose: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """Phase 5c: Robustness / sensitivity analysis (opt-in).
+
+    Returns
+    -------
+    dict or None
+        ``convergence`` DataFrame, ``sensitivity`` DataFrame.
+    """
+    rcfg = cfg.robustness
+    if not rcfg.enabled:
+        if verbose:
+            print(f"\n═══ Phase 5c: Robustness — SKIPPED (disabled) ═══")
+        return None
+
+    if verbose:
+        print(f"\n═══ Phase 5c: Robustness analysis ═══")
+
+    from .analysis.robustness import run_convergence_test, run_numerical_sensitivity
+
+    seed = rcfg.seed if rcfg.seed is not None else (cfg.pipeline.seed or 42)
+
+    conv_df = run_convergence_test(
+        base_cfg=cfg,
+        N_values=rcfg.convergence_N,
+        seed=seed,
+        metric_names=rcfg.metric_names,
+        verbose=verbose,
+    )
+
+    if verbose:
+        print(f"  Convergence test: {len(conv_df)} N values tested")
+
+    sens_df = run_numerical_sensitivity(
+        base_cfg=cfg,
+        seed=seed,
+        metric_names=rcfg.metric_names,
+        robustness_cfg=rcfg,
+        verbose=verbose,
+    )
+
+    if verbose:
+        print(f"  Sensitivity sweep: {len(sens_df)} parameter configs tested")
+
+    return {
+        "convergence": conv_df,
+        "sensitivity": sens_df,
+    }
+
+
 def phase_plots(
     cfg: FullConfig,
     mc: Dict[str, Any],
@@ -441,6 +577,8 @@ def phase_plots(
     output_dir: Path,
     verbose: bool = True,
     baselines: Optional[Dict[str, Any]] = None,
+    uncertainty_results: Optional[Dict[str, Any]] = None,
+    robustness_results: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     """Phase 6: Generate all diagnostic plots.
 
@@ -526,13 +664,9 @@ def phase_plots(
             best_sol, title_prefix="Best", figsize=landscape_size,
         ))
 
-    # Planet-frame diagnostics
+    # Planet-frame diagnostics — skipped (sparse-square artefacts at high N)
     analyses = rerun["analyses_best"]
     valid_ana = [a for a in analyses if a is not None]
-    if valid_ana:
-        _save_fig_dict(plot_planet_frame_diagnostics_individual(
-            valid_ana, R_p, R_star, figsize=landscape_size,
-        ))
 
     # Publication objectives dashboard
     if viz.generate_publication_dashboard:
@@ -588,10 +722,8 @@ def phase_plots(
     try:
         from .output.plotting_twobody import (
             plot_poincare_heatmaps,
-            plot_scattering_maps,
-            plot_encounter_2d_cartesian,
-            plot_encounter_2d_trajectories,
             plot_oberth_comparison,
+            plot_3body_poincare_scatter,
         )
         res = viz.heatmap_grid_resolution
         angles = viz.heatmap_approach_angles_deg
@@ -625,34 +757,17 @@ def phase_plots(
             if verbose:
                 print(f"  ✓ poincare_heatmaps ({len(figs)} figs)")
 
-        if viz.generate_scattering_maps:
+        # 3-body Poincaré scatter (from MC integration data)
+        if viz.generate_poincare_maps and mc is not None:
             before_png = {p.name for p in output_dir.glob("*.png")}
-            figs = plot_scattering_maps(
-                m_star, v_approach_kms=v_app, vstar0_kms=vstar0,
-                approach_angles_deg=angles, num_b=res, num_theta=res,
-                b_min_km=b_min, b_max_km=b_max,
-                body_label=cfg.system.name,
-                save_dir=output_dir, dpi=dpi,
+            figs_3b = plot_3body_poincare_scatter(
+                mc, save_dir=output_dir, dpi=dpi,
             )
-            for f in figs:
+            for f in figs_3b.values():
                 plt.close(f)
             _capture_new_pngs(before_png)
             if verbose:
-                print(f"  ✓ scattering_maps ({len(figs)} figs)")
-
-        if viz.generate_2body_heatmaps:
-            before_png = {p.name for p in output_dir.glob("*.png")}
-            figs = plot_encounter_2d_cartesian(
-                m_star, v_approach_kms=v_app, vstar0_kms=vstar0,
-                approach_angles_deg=angles, num_xy=res,
-                body_label=cfg.system.name,
-                save_dir=output_dir, dpi=dpi,
-            )
-            for f in figs:
-                plt.close(f)
-            _capture_new_pngs(before_png)
-            if verbose:
-                print(f"  ✓ encounter_2d_cartesian ({len(figs)} figs)")
+                print(f"  ✓ poincare_3body_scatter ({len(figs_3b)} figs)")
 
         if viz.generate_oberth_maps:
             before_png = {p.name for p in output_dir.glob("*.png")}
@@ -712,6 +827,41 @@ def phase_plots(
     except Exception as e:
         if verbose:
             print(f"  ✗ trajectory_tracks skipped: {e}")
+
+    # ── Paper-quality multi-objective plots ──
+    try:
+        # Pareto front scatter
+        _save_fig_dict(plot_pareto_front_2d(mc, pareto_indices=top_idx))
+        # Scalar vs vector tradeoff
+        _save_fig_dict(plot_scalar_vs_vector_tradeoff(mc, pareto_indices=top_idx))
+    except Exception as e:
+        if verbose:
+            print(f"  ✗ Pareto/tradeoff plots: {e}")
+
+    # Uncertainty plots
+    if uncertainty_results is not None:
+        try:
+            posterior_df = uncertainty_results.get("posterior_df")
+            if posterior_df is not None and not posterior_df.empty:
+                _save_fig_dict(plot_uncertainty_bands(posterior_df))
+        except Exception as e:
+            if verbose:
+                print(f"  ✗ uncertainty plots: {e}")
+
+    # Robustness plots
+    if robustness_results is not None:
+        try:
+            conv_df = robustness_results.get("convergence")
+            if conv_df is not None and not conv_df.empty:
+                _save_fig_dict(plot_convergence_curves(conv_df))
+
+            sens_df = robustness_results.get("sensitivity")
+            if sens_df is not None and not sens_df.empty:
+                for metric in cfg.robustness.metric_names:
+                    _save_fig_dict(plot_sensitivity_tornado(sens_df, metric_name=metric))
+        except Exception as e:
+            if verbose:
+                print(f"  ✗ robustness plots: {e}")
 
     return saved
 
@@ -809,6 +959,8 @@ def phase_save(
                     "deflection_deg": round(ana["deflection"], 1),
                     "r_min_planet_km": round(ana["r_min"], 0),
                     "r_min_star_km": round(r_star, 0),
+                    "tier": ana.get("tier", ""),
+                    "tier_ratio": round(ana["tier_ratio"], 4) if ana.get("tier_ratio") is not None else "",
                 })
         df = pd.DataFrame(rows)
         df.to_csv(output_dir / "summary.csv", index=False)
@@ -859,6 +1011,7 @@ def run_pipeline(
     configure_console_streams()
 
     all_phases = {"mc", "select", "rerun", "best", "baselines",
+                  "uncertainty", "robustness",
                   "plots", "animations", "save"}
     if phases is None:
         run_phases = all_phases
@@ -929,6 +1082,28 @@ def run_pipeline(
             print("  No re-run data — pipeline stopped.")
         return results
 
+    # ── Tier annotation (runs after rerun, before everything else) ──
+    if cfg.tiering.enabled:
+        from .analysis.tiering import annotate_tiers, tier_candidates, tier_summary_stats
+        annotate_tiers(
+            rerun["analyses_best"],
+            planet_threshold=cfg.tiering.planet_dominated_threshold,
+            hybrid_threshold=cfg.tiering.hybrid_threshold,
+        )
+        tiered = tier_candidates(
+            rerun["analyses_best"],
+            top_indices=top_idx,
+            planet_threshold=cfg.tiering.planet_dominated_threshold,
+            hybrid_threshold=cfg.tiering.hybrid_threshold,
+        )
+        tier_stats = tier_summary_stats(tiered)
+        results["tiered"] = tiered
+        results["tier_stats"] = tier_stats
+        if verbose:
+            from .analysis.tiering import TIER_ORDER
+            counts = ", ".join(f"{t}: {tier_stats[t]['count']}" for t in TIER_ORDER)
+            print(f"\n  Tier classification: {counts}")
+
     # Phase 4 — Best selection
     if "best" in run_phases:
         best = phase_best_selection(
@@ -948,11 +1123,29 @@ def run_pipeline(
     else:
         baselines = results.get("baselines", {})
 
+    # Phase 5b — Uncertainty (opt-in)
+    uncertainty_res = None
+    if "uncertainty" in run_phases:
+        uncertainty_res = phase_uncertainty(cfg, mc, top_idx, verbose=verbose)
+        results["uncertainty"] = uncertainty_res
+    else:
+        uncertainty_res = results.get("uncertainty")
+
+    # Phase 5c — Robustness (opt-in)
+    robustness_res = None
+    if "robustness" in run_phases:
+        robustness_res = phase_robustness(cfg, verbose=verbose)
+        results["robustness"] = robustness_res
+    else:
+        robustness_res = results.get("robustness")
+
     # Phase 6 — Plots
     if "plots" in run_phases:
         saved_plots = phase_plots(
             cfg, mc, top_idx, rerun, best, out,
             verbose=verbose, baselines=baselines,
+            uncertainty_results=uncertainty_res,
+            robustness_results=robustness_res,
         )
         results["saved_plots"] = saved_plots
 
@@ -978,6 +1171,10 @@ def run_pipeline(
             narrowed=baselines.get("narrowed") if baselines else None,
             saved_plots=results.get("saved_plots"),
             top_indices=top_idx,
+            uncertainty_results=uncertainty_res,
+            robustness_results=robustness_res,
+            tiered=results.get("tiered"),
+            tier_stats=results.get("tier_stats"),
         )
         results["report"] = report
         if verbose:

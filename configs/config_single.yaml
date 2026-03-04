@@ -48,6 +48,7 @@ pipeline:
   select_mode: "single"
   select_metric: "bary_delta_v"
   select_sign: "maximize"
+  seed: 42
   selection_objectives:
     - metric: "bary_delta_v"
       sign: "maximize"
@@ -72,8 +73,6 @@ visualization:
   figure_format: "png"
   generate_publication_dashboard: true
   generate_candidate_ranking_plot: true
-  generate_2body_heatmaps: true
-  generate_scattering_maps: true
   generate_poincare_maps: true
   generate_oberth_maps: false
   heatmap_grid_resolution: 60

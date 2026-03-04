@@ -18,12 +18,30 @@ from .console import configure_console_streams, safe_print
 
 
 def _run_compare(run_dirs):
-    from .output.compare_runs import print_comparison
+    from .output.compare_runs import print_comparison, discover_runs
 
     if not run_dirs:
-        safe_print("Error: compare requires at least one run directory")
-        safe_print("Usage: slingshot compare <run_dir> [<run_dir> ...]")
-        sys.exit(2)
+        # Auto-discover all runs
+        discovered = discover_runs("results")
+        if discovered:
+            safe_print(f"Auto-discovered {len(discovered)} runs in results/")
+            print_comparison(discovered)
+        else:
+            safe_print("Error: compare requires at least one run directory")
+            safe_print("Usage: slingshot compare <run_dir> [<run_dir> ...]")
+            safe_print("       slingshot compare --auto              (auto-discover)")
+            sys.exit(2)
+        return
+
+    # Handle --auto flag
+    if run_dirs == ["--auto"] or run_dirs == ["-a"]:
+        discovered = discover_runs("results")
+        if discovered:
+            safe_print(f"Auto-discovered {len(discovered)} runs in results/")
+            print_comparison(discovered)
+        else:
+            safe_print("No results_* directories found in results/")
+        return
 
     print_comparison(run_dirs)
 
